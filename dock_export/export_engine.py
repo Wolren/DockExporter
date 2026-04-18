@@ -19,6 +19,8 @@ import tempfile
 from typing import List, Optional, Tuple
 
 from qgis.core import (
+    QgsCoordinateReferenceSystem,
+    QgsCoordinateTransform,
     QgsCoordinateTransformContext,
     QgsDataProvider,
     QgsExpression,
@@ -45,6 +47,38 @@ except ImportError:
     GDAL_AVAILABLE = False
 
 logger = logging.getLogger("DockExport.ExportEngine")
+
+
+def layer_export_block_reason(layer: QgsMapLayer) -> str:
+    """Return a human-readable reason when a layer cannot be exported."""
+    if isinstance(layer, QgsRasterLayer):
+        provider = (layer.providerType() or "").lower()
+        source = (layer.source() or "").lower()
+        remote_prefixes = (
+            "context:",
+            "wms:",
+            "wmts:",
+            "xyz:",
+            "http://",
+            "https://",
+        )
+        is_remote = (
+            provider in {"wms", "arcgismapserver", "wcs"}
+            or source.startswith(remote_prefixes)
+            or "type=wmts" in source
+            or "type=xyz" in source
+        )
+        if is_remote:
+            return (
+                "Linked web raster layers (WMS/WMTS/XYZ/WCS/HTTP sources) "
+                "are not directly exportable."
+            )
+        return ""
+
+    if isinstance(layer, QgsVectorLayer):
+        return ""
+
+    return "This layer type is not supported by the exporter."
 
 
 class ExportResult:
@@ -99,6 +133,11 @@ class ExportEngine:
             result.error = f"Layer ID '{spec.source_layer_id}' not found or invalid"
             return result
 
+        block_reason = layer_export_block_reason(layer)
+        if block_reason:
+            result.error = block_reason
+            return result
+
         try:
             if isinstance(layer, QgsRasterLayer):
                 self._export_raster(layer, spec, result)
@@ -137,17 +176,26 @@ class ExportEngine:
 
         transform_ctx = QgsProject.instance().transformContext()
 
-        use_safe_clone = bool(spec.filter_expression.strip()) or spec.driver == "GPKG"
+        target_crs = self._resolve_target_crs(layer, spec, result)
+        if target_crs is None:
+            return
+
+        use_safe_clone = (
+            bool(spec.filter_expression.strip())
+            or spec.driver == "GPKG"
+            or target_crs != layer.crs()
+        )
         source = layer
 
         if use_safe_clone:
-            source, n_feats = self._make_filtered_clone(
+            source, n_feats, clone_error = self._make_filtered_clone(
                 layer,
                 spec.filter_expression if spec.filter_expression.strip() else "",
                 spec.driver,
+                target_crs.authid(),
             )
             if source is None:
-                result.error = "Could not build filtered/safe clone"
+                result.error = clone_error or "Could not build filtered/safe clone"
                 return
             result.features_written = n_feats
         else:
@@ -225,13 +273,18 @@ class ExportEngine:
 
         transform_ctx = QgsProject.instance().transformContext()
 
-        source, n_feats = self._make_filtered_clone(
+        target_crs = self._resolve_target_crs(layer, spec, result)
+        if target_crs is None:
+            return
+
+        source, n_feats, clone_error = self._make_filtered_clone(
             layer,
             spec.filter_expression if spec.filter_expression.strip() else "",
             "GPKG",
+            target_crs.authid(),
         )
         if source is None:
-            result.error = "Could not build filtered/safe clone"
+            result.error = clone_error or "Could not build filtered/safe clone"
             return
         result.features_written = n_feats
 
@@ -332,10 +385,13 @@ class ExportEngine:
                 return
 
             driver_name = "GTiff" if spec.driver == "GTiff" else spec.driver
+            translate_kwargs = {"format": driver_name}
+            if spec.target_crs_authid.strip():
+                translate_kwargs["outputSRS"] = spec.target_crs_authid.strip()
             gdal.Translate(
                 output_path,
                 src_ds,
-                format=driver_name,
+                **translate_kwargs,
             )
             src_ds = None
 
@@ -383,11 +439,17 @@ class ExportEngine:
                 "APPEND_SUBDATASET=YES",
             ]
 
+            translate_kwargs = {
+                "format": "GPKG",
+                "creationOptions": creation_opts,
+            }
+            if spec.target_crs_authid.strip():
+                translate_kwargs["outputSRS"] = spec.target_crs_authid.strip()
+
             gdal.Translate(
                 gpkg_path,
                 src_ds,
-                format="GPKG",
-                creationOptions=creation_opts,
+                **translate_kwargs,
             )
             src_ds = None
 
@@ -403,7 +465,8 @@ class ExportEngine:
         layer: QgsVectorLayer,
         expression: str,
         driver_name: str = "",
-    ) -> Tuple[Optional[QgsVectorLayer], int]:
+        target_crs_authid: str = "",
+    ) -> Tuple[Optional[QgsVectorLayer], int, str]:
         drop_fid = driver_name.upper() == "GPKG"
 
         source_fields = layer.fields()
@@ -416,13 +479,20 @@ class ExportEngine:
             kept_indexes.append(idx)
             kept_fields.append(field)
 
+        target_crs = layer.crs()
+        if target_crs_authid.strip():
+            requested = QgsCoordinateReferenceSystem(target_crs_authid.strip())
+            if not requested.isValid():
+                return None, 0, f"Invalid target CRS: {target_crs_authid}"
+            target_crs = requested
+
         geom_type = QgsWkbTypes.displayString(layer.wkbType())
-        crs_str = layer.crs().authid()
+        crs_str = target_crs.authid()
         uri = f"{geom_type}?crs={crs_str}"
         mem = QgsVectorLayer(uri, "filtered_clone", "memory")
         if not mem.isValid():
             logger.error("Could not create memory clone layer")
-            return None, 0
+            return None, 0, "Could not create memory clone layer"
 
         dp = mem.dataProvider()
         dp.addAttributes(list(kept_fields))
@@ -432,16 +502,29 @@ class ExportEngine:
             expr = QgsExpression(expression)
             if expr.hasParserError():
                 logger.error("Filter expression parser error: %s", expr.parserErrorString())
-                return None, 0
+                return None, 0, expr.parserErrorString()
             request = QgsFeatureRequest(expr)
             iterator = layer.getFeatures(request)
         else:
             iterator = layer.getFeatures()
 
+        transform = None
+        if target_crs != layer.crs():
+            transform = QgsCoordinateTransform(
+                layer.crs(),
+                target_crs,
+                QgsProject.instance().transformContext(),
+            )
+
         new_features = []
         for src_feat in iterator:
             feat = QgsFeature(mem.fields())
-            feat.setGeometry(src_feat.geometry())
+            geom = src_feat.geometry()
+            if transform is not None and geom is not None and not geom.isNull():
+                transform_result = geom.transform(transform)
+                if transform_result != 0:
+                    return None, 0, "Geometry transformation failed"
+            feat.setGeometry(geom)
             feat.setAttributes([src_feat[i] for i in kept_indexes])
             feat.setId(-1)
             new_features.append(feat)
@@ -449,7 +532,7 @@ class ExportEngine:
         ok, _ = dp.addFeatures(new_features)
         if not ok:
             logger.error("Failed to add filtered features to memory layer")
-            return None, 0
+            return None, 0, "Failed to add features to memory layer"
 
         mem.updateExtents()
         logger.info(
@@ -457,7 +540,22 @@ class ExportEngine:
             len(new_features),
             layer.featureCount(),
         )
-        return mem, len(new_features)
+        return mem, len(new_features), ""
+
+    @staticmethod
+    def _resolve_target_crs(
+        layer: QgsMapLayer,
+        spec: ExportSpec,
+        result: ExportResult,
+    ) -> Optional[QgsCoordinateReferenceSystem]:
+        target = spec.target_crs_authid.strip()
+        if not target:
+            return layer.crs()
+        crs = QgsCoordinateReferenceSystem(target)
+        if not crs.isValid():
+            result.error = f"Invalid target CRS: {target}"
+            return None
+        return crs
 
     # -------------------- REPLACE PROJECT SOURCE --------------------
     @staticmethod

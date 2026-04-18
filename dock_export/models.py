@@ -50,6 +50,7 @@ class ExportSpec:
     filter_expression: str = ""
     style_mode: str = "none"         # 'none'|'qml'|'sld'|'both'|'embed'
     replace_in_project: bool = False
+    target_crs_authid: str = ""
 
     # ------------------------------------------------------------------ #
     # Helpers                                                              #

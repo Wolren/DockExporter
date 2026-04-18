@@ -29,18 +29,20 @@ from qgis.PyQt.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from qgis.core import (
+    QgsCoordinateReferenceSystem,
     QgsProject,
     QgsRasterLayer,
     QgsVectorLayer,
 )
 
-from .export_engine import ExportEngine, ExportResult
+from .export_engine import ExportEngine, ExportResult, layer_export_block_reason
 from .layer_table_widget import LayerTableWidget
 from .models import ExportSpec
 from .sql_filter_widget import SQLFilterDialog
@@ -63,6 +65,7 @@ class ExportWidget(QWidget):
         self.iface = iface
         self._engine = ExportEngine(StyleManager())
         self._filters: Dict[str, str] = {}   # layer_id → expression
+        self._target_crs: Dict[str, str] = {}  # layer_id → target CRS authid
         self._filter_dialog: Optional[SQLFilterDialog] = None
 
         self._build_ui()
@@ -97,6 +100,13 @@ class ExportWidget(QWidget):
         btn_row = QHBoxLayout()
         btn_row.addStretch()
 
+        self._reset_names_btn = QPushButton("Reset Names")
+        self._reset_names_btn.setToolTip(
+            "Reset all export names back to their source layer names"
+        )
+        self._reset_names_btn.clicked.connect(self._reset_export_names)
+        btn_row.addWidget(self._reset_names_btn)
+
         self._filter_btn = QPushButton("Set Filters")
         self._filter_btn.setToolTip(
             "Set per-layer QGIS expression filters for selected layers"
@@ -124,18 +134,22 @@ class ExportWidget(QWidget):
         self._single_table.export_name_changed.connect(
             self._on_export_name_changed
         )
+        self._single_table.crs_changed.connect(self._on_target_crs_changed)
         layout.addWidget(self._single_table)
 
         sel_row = QHBoxLayout()
-        all_btn = QPushButton("All")
-        all_btn.setMaximumWidth(60)
+        all_btn = QPushButton("Select all")
+        all_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         all_btn.clicked.connect(self._single_table.check_all)
-        sel_row.addWidget(all_btn)
-        none_btn = QPushButton("None")
-        none_btn.setMaximumWidth(60)
+        sel_row.addWidget(all_btn, 1)
+        none_btn = QPushButton("Deselect all")
+        none_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         none_btn.clicked.connect(self._single_table.uncheck_all)
-        sel_row.addWidget(none_btn)
-        sel_row.addStretch()
+        sel_row.addWidget(none_btn, 1)
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        refresh_btn.clicked.connect(self._refresh_layers)
+        sel_row.addWidget(refresh_btn, 1)
         layout.addLayout(sel_row)
 
         # Format selection
@@ -201,18 +215,22 @@ class ExportWidget(QWidget):
         self._gpkg_table.export_name_changed.connect(
             self._on_export_name_changed
         )
+        self._gpkg_table.crs_changed.connect(self._on_target_crs_changed)
         layout.addWidget(self._gpkg_table)
 
         sel_row = QHBoxLayout()
-        all_btn = QPushButton("All")
-        all_btn.setMaximumWidth(60)
+        all_btn = QPushButton("Select all")
+        all_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         all_btn.clicked.connect(self._gpkg_table.check_all)
-        sel_row.addWidget(all_btn)
-        none_btn = QPushButton("None")
-        none_btn.setMaximumWidth(60)
+        sel_row.addWidget(all_btn, 1)
+        none_btn = QPushButton("Deselect all")
+        none_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         none_btn.clicked.connect(self._gpkg_table.uncheck_all)
-        sel_row.addWidget(none_btn)
-        sel_row.addStretch()
+        sel_row.addWidget(none_btn, 1)
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        refresh_btn.clicked.connect(self._refresh_layers)
+        sel_row.addWidget(refresh_btn, 1)
         layout.addLayout(sel_row)
 
         out_group = QGroupBox("Output GeoPackage")
@@ -254,8 +272,26 @@ class ExportWidget(QWidget):
         proj = QgsProject.instance()
         proj.layersAdded.connect(self._on_layers_changed)
         proj.layersRemoved.connect(self._on_layers_changed)
+        proj.layerWasAdded.connect(self._on_layers_changed)
+        proj.cleared.connect(self._on_layers_changed)
+        proj.readProject.connect(self._on_layers_changed)
         root = proj.layerTreeRoot()
         root.nameChanged.connect(self._on_layers_changed)
+        if hasattr(root, "addedChildren"):
+            root.addedChildren.connect(self._on_layers_changed)
+        if hasattr(root, "removedChildren"):
+            root.removedChildren.connect(self._on_layers_changed)
+
+        if hasattr(self.iface, "projectRead"):
+            try:
+                self.iface.projectRead.connect(self._on_layers_changed)
+            except Exception:
+                pass
+        if hasattr(self.iface, "newProjectCreated"):
+            try:
+                self.iface.newProjectCreated.connect(self._on_layers_changed)
+            except Exception:
+                pass
 
     def disconnect_all(self) -> None:
         """Call from dock closeEvent to avoid dangling signal connections."""
@@ -263,7 +299,19 @@ class ExportWidget(QWidget):
             proj = QgsProject.instance()
             proj.layersAdded.disconnect(self._on_layers_changed)
             proj.layersRemoved.disconnect(self._on_layers_changed)
-            proj.layerTreeRoot().nameChanged.disconnect(self._on_layers_changed)
+            proj.layerWasAdded.disconnect(self._on_layers_changed)
+            proj.cleared.disconnect(self._on_layers_changed)
+            proj.readProject.disconnect(self._on_layers_changed)
+            root = proj.layerTreeRoot()
+            root.nameChanged.disconnect(self._on_layers_changed)
+            if hasattr(root, "addedChildren"):
+                root.addedChildren.disconnect(self._on_layers_changed)
+            if hasattr(root, "removedChildren"):
+                root.removedChildren.disconnect(self._on_layers_changed)
+            if hasattr(self.iface, "projectRead"):
+                self.iface.projectRead.disconnect(self._on_layers_changed)
+            if hasattr(self.iface, "newProjectCreated"):
+                self.iface.newProjectCreated.disconnect(self._on_layers_changed)
         except Exception:
             pass
 
@@ -276,11 +324,17 @@ class ExportWidget(QWidget):
 
     def _refresh_layers(self) -> None:
         all_layers = list(QgsProject.instance().mapLayers().values())
+        valid_ids = {layer.id() for layer in all_layers}
+        self._filters = {lid: expr for lid, expr in self._filters.items() if lid in valid_ids}
+        self._target_crs = {lid: crs for lid, crs in self._target_crs.items() if lid in valid_ids}
+
         # Re-apply stored filters to tables
         for table in (self._single_table, self._gpkg_table):
             table.populate(all_layers)
             for lid, expr in self._filters.items():
                 table.set_filter(lid, expr)
+            for lid, authid in self._target_crs.items():
+                table.set_target_crs(lid, authid)
 
     # ------------------------------------------------------------------ #
     # Export name changes                                                  #
@@ -291,6 +345,12 @@ class ExportWidget(QWidget):
         # Each table tracks its own _export_names dict; that's fine – they
         # are read independently at export time.
         pass  # tables maintain their own state
+
+    def _on_target_crs_changed(self, layer_id: str, authid: str) -> None:
+        self._target_crs[layer_id] = authid
+        for table in (self._single_table, self._gpkg_table):
+            if table.get_target_crs(layer_id) != authid:
+                table.set_target_crs(layer_id, authid)
 
     # ------------------------------------------------------------------ #
     # Filter dialog                                                        #
@@ -326,6 +386,15 @@ class ExportWidget(QWidget):
         self._filters[layer_id] = expression
         for table in (self._single_table, self._gpkg_table):
             table.set_filter(layer_id, expression)
+
+    # ------------------------------------------------------------------ #
+    # Reset export names                                                   #
+    # ------------------------------------------------------------------ #
+
+    def _reset_export_names(self) -> None:
+        """Reset export names on both tables back to source layer names."""
+        for table in (self._single_table, self._gpkg_table):
+            table.reset_export_names()
 
     # ------------------------------------------------------------------ #
     # Export dispatch                                                      #
@@ -372,10 +441,24 @@ class ExportWidget(QWidget):
         replace = self._single_replace_cb.isChecked()
 
         specs: List[ExportSpec] = []
+        skipped: List[str] = []
         for lid, exp_name in checked:
             layer = QgsProject.instance().mapLayer(lid)
             if layer is None:
                 continue
+
+            block_reason = self._single_table.export_warning(lid) or layer_export_block_reason(layer)
+            if block_reason:
+                skipped.append(f"{exp_name}: {block_reason}")
+                continue
+
+            target_crs = self._target_crs.get(lid, "").strip()
+            if not target_crs and layer.crs().isValid():
+                target_crs = layer.crs().authid()
+            if target_crs and not QgsCoordinateReferenceSystem(target_crs).isValid():
+                skipped.append(f"{exp_name}: invalid CRS '{target_crs}'")
+                continue
+
             is_raster = isinstance(layer, QgsRasterLayer)
 
             for driver in selected_drivers:
@@ -391,6 +474,7 @@ class ExportWidget(QWidget):
                         filter_expression=self._filters.get(lid, ""),
                         style_mode=style_mode if style_mode != "embed" else "qml",
                         replace_in_project=replace,
+                        target_crs_authid=target_crs,
                     )
                     specs.append(spec)
                     break  # only one raster format
@@ -404,8 +488,18 @@ class ExportWidget(QWidget):
                         filter_expression=self._filters.get(lid, ""),
                         style_mode=style_mode,
                         replace_in_project=replace,
+                        target_crs_authid=target_crs,
                     )
                     specs.append(spec)
+
+        if skipped:
+            QMessageBox.warning(
+                self,
+                "Some layers were skipped",
+                "These selected layers were not queued for export:\n\n" + "\n".join(f"• {line}" for line in skipped),
+            )
+        if not specs:
+            return
 
         self._run_specs(specs)
 
@@ -448,10 +542,24 @@ class ExportWidget(QWidget):
             style_mode = "none"
 
         specs: List[ExportSpec] = []
+        skipped: List[str] = []
         for lid, exp_name in checked:
             layer = QgsProject.instance().mapLayer(lid)
             if layer is None:
                 continue
+
+            block_reason = self._gpkg_table.export_warning(lid) or layer_export_block_reason(layer)
+            if block_reason:
+                skipped.append(f"{exp_name}: {block_reason}")
+                continue
+
+            target_crs = self._target_crs.get(lid, "").strip()
+            if not target_crs and layer.crs().isValid():
+                target_crs = layer.crs().authid()
+            if target_crs and not QgsCoordinateReferenceSystem(target_crs).isValid():
+                skipped.append(f"{exp_name}: invalid CRS '{target_crs}'")
+                continue
+
             is_raster = isinstance(layer, QgsRasterLayer)
 
             spec = ExportSpec(
@@ -463,8 +571,18 @@ class ExportWidget(QWidget):
                 filter_expression=self._filters.get(lid, ""),
                 style_mode=style_mode,
                 replace_in_project=replace,
+                target_crs_authid=target_crs,
             )
             specs.append(spec)
+
+        if skipped:
+            QMessageBox.warning(
+                self,
+                "Some layers were skipped",
+                "These selected layers were not queued for export:\n\n" + "\n".join(f"• {line}" for line in skipped),
+            )
+        if not specs:
+            return
 
         self._run_specs(specs)
 
