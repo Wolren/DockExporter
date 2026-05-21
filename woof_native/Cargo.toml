@@ -1,0 +1,18 @@
+[package]
+name = "woof_native"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "_native_impl"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["abi3-py39"] }
+zstd = { version = "0.13", features = ["experimental"] }
+rayon = "1.10"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true

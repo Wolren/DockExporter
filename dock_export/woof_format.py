@@ -38,6 +38,15 @@ from typing import Dict, List
 
 import zstandard as _zstd
 
+try:
+    from ._woof_native import (
+        NATIVE as _NATIVE,
+        pack_v2 as _pack_v2_native,
+        unpack_v2 as _unpack_v2_native,
+    )
+except ImportError:
+    _NATIVE = False
+
 WOOF_MAGIC = b"WOOF"
 WOOF_VERSION_V1 = 1
 WOOF_VERSION_V2 = 2
@@ -292,6 +301,8 @@ def pack_woof(
     *use_v2*=True   → v2 (zstd per-file, default)
     *use_v2*=False  → v1 (zlib per-entry, legacy)
     """
+    if _NATIVE and use_v2:
+        return _pack_v2_native(entries, compress)
     if use_v2:
         return _pack_v2(_iter_dict(entries), compress)
     return _pack_v1(_iter_dict(entries), compress)
