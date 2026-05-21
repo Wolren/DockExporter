@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Comprehensive benchmark suite for .woof compressor with real-time rich display.
 
-Measures every aspect of archiving performance across all modes (v1/v2/v3)
+Measures every aspect of archiving performance across all modes (v1/v2/ZIP)
 and scenarios (tiny / small / standard / text-heavy / binary-heavy / mixed).
 
 Usage:
@@ -17,11 +17,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import io
 import math
 import os
 import sys
 import time
 import tracemalloc
+import zipfile
 from typing import Dict, List, Tuple
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -106,105 +108,31 @@ def _bar(val: float, max_val: float, width: int = 20) -> str:
 # ── Mode definitions ─────────────────────────────────────────────
 
 _MODE_LABELS = {
-    ("v1", False, False): "v1 (zlib, no compress)",
-    ("v1", True, False): "v1 (zlib, compress)",
-    ("v2", False, False): "v2 (zstd+CDC, no compress)",
-    ("v2", True, False): "v2 (zstd+CDC, compress)",
-    ("v3", True, True): "v3 (zstd+CDC+graph, compress)",
-    ("v3", False, True): "v3 (zstd+CDC+graph, no compress)",
+    ("v1", False): "v1 (zlib, no compress)",
+    ("v1", True): "v1 (zlib, compress)",
+    ("v2", False): "v2 (zstd+CDC, no compress)",
+    ("v2", True): "v2 (zstd+CDC, compress)",
+    ("zip", False): "ZIP (store)",
+    ("zip", True): "ZIP (deflate)",
 }
 
 
-def _mode_key(mode: str, compress: bool, graph: bool):
-    return (mode, compress, graph)
+def _mode_key(mode: str, compress: bool):
+    return (mode, compress)
 
 
-def _modes_to_benchmark(quick: bool = False) -> List[Tuple[str, bool, bool]]:
+def _modes_to_benchmark(quick: bool = False) -> List[Tuple[str, bool]]:
     modes = [
-        ("v1", False, False),
-        ("v1", True, False),
-        ("v2", False, False),
-        ("v2", True, False),
+        ("v1", False),
+        ("v1", True),
+        ("v2", False),
+        ("v2", True),
+        ("zip", False),
+        ("zip", True),
     ]
-    try:
-        import zstandard  # noqa: F401
-
-        modes += [
-            ("v3", True, True),
-            ("v3", False, True),
-        ]
-    except ImportError:
-        pass
     if quick:
         modes = [m for m in modes if m[1]]
     return modes
-
-
-# ── Entry comparison (handles XML cosmetic differences for v3) ──
-
-_XML_EXTS = {".qgs", ".qml", ".xml", ".sld", ".geojson", ".svg", ".txt"}
-
-
-def _xml_infoset_equal(a: bytes, b: bytes) -> bool:
-    """Compare two XML docs for infoset equality, ignoring formatting."""
-    if a == b:
-        return True
-    try:
-        import xml.etree.ElementTree as ET
-
-        root_a = ET.fromstring(a)
-        root_b = ET.fromstring(b)
-    except Exception:
-        return False
-
-    def _compare(e1: ET.Element, e2: ET.Element) -> bool:
-        if e1.tag != e2.tag:
-            return False
-        if e1.attrib != e2.attrib:
-            return False
-        t1 = (e1.text or "").strip()
-        t2 = (e2.text or "").strip()
-        if t1 != t2:
-            return False
-        c1 = list(e1)
-        c2 = list(e2)
-        if len(c1) != len(c2):
-            return False
-        return all(_compare(x, y) for x, y in zip(c1, c2))
-
-    return _compare(root_a, root_b)
-
-
-def _assert_entries_equal(
-    result: Dict[str, bytes],
-    expected: Dict[str, bytes],
-    mode: str,
-    compress: bool,
-    graph: bool,
-) -> None:
-    """Compare entry dicts, handling cosmetic XML differences for v3."""
-    if set(result.keys()) != set(expected.keys()):
-        missing = set(expected.keys()) - set(result.keys())
-        extra = set(result.keys()) - set(expected.keys())
-        msg = f"Key mismatch in {mode} c={compress} g={graph}"
-        if missing:
-            msg += f" missing={missing}"
-        if extra:
-            msg += f" extra={extra}"
-        raise AssertionError(msg)
-    for key in expected:
-        a, b = expected[key], result[key]
-        if graph and any(key.lower().endswith(ext) for ext in _XML_EXTS):
-            if not _xml_infoset_equal(a, b):
-                raise AssertionError(
-                    f"XML content mismatch for {key!r} in {mode} c={compress} g={graph}"
-                )
-        elif a != b:
-            size_diff = len(a) != len(b)
-            raise AssertionError(
-                f"Content mismatch for {key!r} in {mode} c={compress} "
-                f"g={graph} size_diff={size_diff}"
-            )
 
 
 # ── Core benchmark ───────────────────────────────────────────────
@@ -214,38 +142,56 @@ def _bench_one(
     entries: Dict[str, bytes],
     mode: str,
     compress: bool,
-    graph: bool,
     iterations: int = 3,
     warmup: int = 1,
 ) -> Metrics:
     meta: Metrics = {
         "mode": mode,
         "compress": compress,
-        "graph_dedup": graph,
         "entries": len(entries),
         "raw_size": sum(len(c) for c in entries.values()),
     }
 
-    kwargs = {"compress": compress, "graph_dedup": graph}
-    if mode == "v1":
-        kwargs["use_v2"] = False
-    elif mode in ("v2", "v3"):
-        kwargs["use_v2"] = True
+    if mode == "zip":
+        level = zipfile.ZIP_DEFLATED if compress else zipfile.ZIP_STORED
+
+        def _pack(e):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", level) as zf:
+                for name, data in e.items():
+                    zf.writestr(name, data)
+            return buf.getvalue()
+
+        def _unpack(packed):
+            buf = io.BytesIO(packed)
+            result = {}
+            with zipfile.ZipFile(buf, "r") as zf:
+                for name in zf.namelist():
+                    result[name] = zf.read(name)
+            return result
+    else:
+        kwargs: dict = {"compress": compress}
+        if mode == "v1":
+            kwargs["use_v2"] = False
+        elif mode == "v2":
+            kwargs["use_v2"] = True
+        _pack = lambda e: pack_woof(e, **kwargs)
+        _unpack = unpack_woof
 
     for _ in range(warmup):
-        _ = pack_woof(entries, **kwargs)
+        _ = _pack(entries)
 
     pack_times: List[float] = []
     pack_sizes: List[int] = []
     for _ in range(iterations):
         t0 = time.perf_counter()
-        packed = pack_woof(entries, **kwargs)
+        packed = _pack(entries)
         t1 = time.perf_counter()
         pack_times.append(t1 - t0)
         pack_sizes.append(len(packed))
 
     tracemalloc.start()
-    _ = pack_woof(entries, **kwargs)
+    _ = _pack(entries)
     _current, peak_pack = tracemalloc.get_traced_memory()
     tracemalloc.stop()
 
@@ -254,10 +200,8 @@ def _bench_one(
     raw = meta["raw_size"]
     arch = meta["archive_size"]
     meta["ratio"] = round(raw / arch, 3) if arch > 0 else 0.0
-    meta["overhead_bytes"] = arch - HEADER_SIZE
-    meta["overhead_pct"] = (
-        round((arch - HEADER_SIZE) / arch * 100, 2) if arch > 0 else 0
-    )
+    meta["overhead_bytes"] = arch - raw
+    meta["overhead_pct"] = round((arch - raw) / arch * 100, 2) if arch > 0 else 0
     meta["pack_speed_mbps"] = (
         round((raw / 1_048_576) / meta["pack_time"], 3)
         if meta["pack_time"] > 0
@@ -266,23 +210,18 @@ def _bench_one(
     meta["pack_memory_kb"] = peak_pack // 1024
 
     for _ in range(warmup):
-        _ = unpack_woof(packed)
+        _ = _unpack(packed)
 
     unpack_times: List[float] = []
     for _ in range(iterations):
         t0 = time.perf_counter()
-        result = unpack_woof(packed)
+        result = _unpack(packed)
         t1 = time.perf_counter()
-        if graph:
-            _assert_entries_equal(result, entries, mode, compress, graph)
-        else:
-            assert result == entries, (
-                f"Roundtrip failed in {mode} compress={compress} graph={graph}"
-            )
+        assert result == entries, f"Roundtrip failed in {mode} compress={compress}"
         unpack_times.append(t1 - t0)
 
     tracemalloc.start()
-    _ = unpack_woof(packed)
+    _ = _unpack(packed)
     _current, peak_unpack = tracemalloc.get_traced_memory()
     tracemalloc.stop()
 
@@ -294,57 +233,59 @@ def _bench_one(
     )
     meta["unpack_memory_kb"] = peak_unpack // 1024
 
-    # Parse payload for chunk/resource stats
-    try:
-        import struct as _struct
+    # Parse payload for chunk/file stats (woof modes only)
+    meta["num_chunks"] = 0
+    meta["file_entries"] = 0
+    if mode in ("v1", "v2"):
+        try:
+            import struct as _struct
 
-        _magic, _ver, hdr_flags, xor_size, _raw_total = _struct.unpack(
-            "<4sIQQQ", packed[:HEADER_SIZE]
-        )
-        payload = packed[HEADER_SIZE : HEADER_SIZE + xor_size]
-        if hdr_flags & FLAG_XOR:
-            payload = _xor(payload)
-
-        pos = 0
-        if hdr_flags & FLAG_HAS_CHUNK_STORE:
-            (num_chunks,) = _struct.unpack_from("<Q", payload, pos)
-            meta["num_chunks"] = num_chunks
-            pos += 8
-            unique_sizes = []
-            for _ in range(num_chunks):
-                pos += 32
-                comp_size, rsize = _struct.unpack_from("<QQ", payload, pos)
-                pos += 16
-                unique_sizes.append(rsize)
-                pos += comp_size
-            meta["unique_chunks"] = num_chunks
-            meta["dedup_total_raw"] = sum(unique_sizes)
-            meta["avg_chunk_size"] = (
-                round(sum(unique_sizes) / num_chunks, 1) if num_chunks > 0 else 0
+            _magic, _ver, hdr_flags, xor_size, _raw_total = _struct.unpack(
+                "<4sIQQQ", packed[:HEADER_SIZE]
             )
-        else:
-            meta["num_chunks"] = 0
-            meta["unique_chunks"] = 0
-            meta["dedup_total_raw"] = 0
-            meta["avg_chunk_size"] = 0
+            payload = packed[HEADER_SIZE : HEADER_SIZE + xor_size]
+            if hdr_flags & FLAG_XOR:
+                payload = _xor(payload)
 
-        ftable = payload[pos:]
-        num_entries = 0
-        fp = 0
-        while fp < len(ftable):
-            num_entries += 1
-            _flags, name_len = _struct.unpack_from("<II", ftable, fp)
-            fp += 8 + name_len
-            if _flags & FLAG_ENTRY_CHUNKED:
-                num_hashes, _tt = _struct.unpack_from("<II", ftable, fp)
-                fp += 8 + num_hashes * 32
+            pos = 0
+            if hdr_flags & FLAG_HAS_CHUNK_STORE:
+                (num_chunks,) = _struct.unpack_from("<Q", payload, pos)
+                meta["num_chunks"] = num_chunks
+                pos += 8
+                unique_sizes = []
+                for _ in range(num_chunks):
+                    pos += 32
+                    comp_size, rsize = _struct.unpack_from("<QQ", payload, pos)
+                    pos += 16
+                    unique_sizes.append(rsize)
+                    pos += comp_size
+                meta["unique_chunks"] = num_chunks
+                meta["dedup_total_raw"] = sum(unique_sizes)
+                meta["avg_chunk_size"] = (
+                    round(sum(unique_sizes) / num_chunks, 1) if num_chunks > 0 else 0
+                )
             else:
-                (data_len,) = _struct.unpack_from("<Q", ftable, fp)
-                fp += 8 + data_len
-        meta["file_entries"] = num_entries
+                meta["unique_chunks"] = 0
+                meta["dedup_total_raw"] = 0
+                meta["avg_chunk_size"] = 0
 
-    except Exception as exc:
-        meta["parse_error"] = str(exc)
+            ftable = payload[pos:]
+            num_entries = 0
+            fp = 0
+            while fp < len(ftable):
+                num_entries += 1
+                _flags, name_len = _struct.unpack_from("<II", ftable, fp)
+                fp += 8 + name_len
+                if _flags & FLAG_ENTRY_CHUNKED:
+                    num_hashes, _tt = _struct.unpack_from("<II", ftable, fp)
+                    fp += 8 + num_hashes * 32
+                else:
+                    (data_len,) = _struct.unpack_from("<Q", ftable, fp)
+                    fp += 8 + data_len
+            meta["file_entries"] = num_entries
+
+        except Exception as exc:
+            meta["parse_error"] = str(exc)
 
     return meta
 
@@ -418,8 +359,8 @@ def _build_bar_chart(
     lines: List[str] = []
     for m in sorted(metrics_list, key=lambda x: float(x["ratio"]), reverse=True):
         label = _MODE_LABELS.get(
-            _mode_key(m["mode"], m["compress"], m["graph_dedup"]),
-            f"{m['mode']} c={m['compress']} g={m['graph_dedup']}",
+            _mode_key(m["mode"], m["compress"]),
+            f"{m['mode']} c={m['compress']}",
         )
         bar = _bar(float(m["ratio"]), max_ratio, width=30)
         lines.append(f"  {label:<26} {bar} {m['ratio']:.2f}x")
@@ -477,7 +418,7 @@ def _build_summary_layout(
     fmt = "{:<16}  " + " ".join("{:>10}" for _ in range(len(scenario_metrics)))
     if scenario_metrics:
         headers = " ".join(
-            f"{_MODE_LABELS.get(_mode_key(m['mode'], m['compress'], m['graph_dedup']), m['mode']):>10}"
+            f"{_MODE_LABELS.get(_mode_key(m['mode'], m['compress']), m['mode']):>10}"
             for m in scenario_metrics
         )
         cross_lines.append(f"  {'Scenario':<16}  {headers}")
@@ -521,7 +462,7 @@ def _plain_print_result(m: Metrics, failed: bool = False) -> None:
 
 # ── Report generation ────────────────────────────────────────────
 
-_HEADER_SEP = "=" * 100
+_HEADER_SEP = "---"
 
 
 def _build_report(
@@ -573,18 +514,18 @@ def _build_report(
             parts = [f"{entries[0]:<{w[0]}}"]
             for i in range(1, len(entries)):
                 parts.append(f"{entries[i]:>{w[i]}}")
-            return " | ".join(parts)
+            return "| " + " | ".join(parts) + " |"
 
         def _fmt_sep(w: List[int]) -> str:
-            return "-+-".join("-" * w_i for w_i in w)
+            return "|" + "|".join("-" * w_i for w_i in w) + "|"
 
         lines.append(f"\n{_fmt_row(headers, widths)}")
         lines.append(_fmt_sep(widths))
 
         for m in metrics_list:
             label = _MODE_LABELS.get(
-                _mode_key(m["mode"], m["compress"], m["graph_dedup"]),
-                f"{m['mode']} c={m['compress']} g={m['graph_dedup']}",
+                _mode_key(m["mode"], m["compress"]),
+                f"{m['mode']} c={m['compress']}",
             )
             row = [
                 _human_bytes(m["archive_size"]),
@@ -599,33 +540,47 @@ def _build_report(
             lines.append(_fmt_row([label] + row, widths))
 
         lines.append(f"\n**Ratio comparison (higher = better):**")
+        lines.append(f"\n| Mode | Ratio | Bar |")
+        lines.append(f"|------|-------|-----|")
         max_ratio = max(m["ratio"] for m in metrics_list)
         for m in sorted(metrics_list, key=lambda x: x["ratio"], reverse=True):
             label = _MODE_LABELS.get(
-                _mode_key(m["mode"], m["compress"], m["graph_dedup"]), f"{m['mode']}"
+                _mode_key(m["mode"], m["compress"]), f"{m['mode']}"
             )
             bar = _bar(float(m["ratio"]), max_ratio)
-            lines.append(f"  {label:<24} {bar} {m['ratio']:.2f}x")
+            pct = int((m["ratio"] / max_ratio) * 100) if max_ratio > 0 else 0
+            lines.append(f"| {label} | {m['ratio']:.2f}x | {bar} |")
 
     # Cross-scenario summary
     lines.append(f"\n{_HEADER_SEP}")
     lines.append("## Cross-Scenario Summary (Compression Ratio)")
     first_scenario_metrics = all_metrics.get(scenario_order[0], [])
     if first_scenario_metrics:
-        lines.append(
-            f"\n{'Scenario':<20} "
-            + " ".join(
-                f"{_MODE_LABELS.get(_mode_key(m['mode'], m['compress'], m['graph_dedup']), m['mode']):>16}"
-                for m in first_scenario_metrics
+        cross_headers = [("Scenario", 20)]
+        for m in first_scenario_metrics:
+            label = _MODE_LABELS.get(
+                _mode_key(m["mode"], m["compress"]), f"{m['mode']}"
             )
-        )
-        lines.append("-" * 100)
+            cross_headers.append((label, max(len(label) + 2, 16)))
+        cw = [ch[1] for ch in cross_headers]
+
+        def _cross_row(entries: List[str]) -> str:
+            parts = [f"{entries[0]:<{cw[0]}}"]
+            for i in range(1, len(entries)):
+                parts.append(f"{entries[i]:>{cw[i]}}")
+            return "| " + " | ".join(parts) + " |"
+
+        def _cross_sep() -> str:
+            return "|" + "|".join("-" * w for w in cw) + "|"
+
+        lines.append(f"\n{_cross_row([ch[0] for ch in cross_headers])}")
+        lines.append(_cross_sep())
         for scenario in scenario_order:
             metrics_list = all_metrics.get(scenario, [])
             if not metrics_list:
                 continue
-            ratios = " ".join(f"{m['ratio']:>16.3f}" for m in metrics_list)
-            lines.append(f"{scenario:<20} {ratios}")
+            ratios = [f"{m['ratio']:>16.3f}" for m in metrics_list]
+            lines.append(_cross_row([scenario] + ratios))
 
     # Recommendations
     lines.append(f"\n{_HEADER_SEP}")
@@ -640,19 +595,13 @@ def _build_report(
         for m in all_metrics.get(scenario, []):
             if m["ratio"] > best_ratio:
                 best_ratio = m["ratio"]
-                best_mode = (
-                    f"{m['mode']} compress={m['compress']} graph={m['graph_dedup']}"
-                )
+                best_mode = f"{m['mode']} compress={m['compress']}"
             if m["pack_time"] < best_speed and m["compress"]:
                 best_speed = m["pack_time"]
-                best_speed_mode = (
-                    f"{m['mode']} compress={m['compress']} graph={m['graph_dedup']}"
-                )
+                best_speed_mode = f"{m['mode']} compress={m['compress']}"
             if m["pack_memory_kb"] < best_mem:
                 best_mem = m["pack_memory_kb"]
-                best_mem_mode = (
-                    f"{m['mode']} compress={m['compress']} graph={m['graph_dedup']}"
-                )
+                best_mem_mode = f"{m['mode']} compress={m['compress']}"
     lines.append(f"- **Best compression ratio**: {best_ratio:.3f}x ({best_mode})")
     lines.append(f"- **Fastest pack**: {_human_time(best_speed)} ({best_speed_mode})")
     lines.append(
@@ -685,7 +634,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mode",
-        choices=["all", "v1", "v2", "v3"],
+        choices=["all", "v1", "v2", "zip"],
         default="all",
         help="Which compression mode to test (default: all)",
     )
@@ -741,7 +690,6 @@ def main() -> None:
     use_live = _HAVE_RICH and not args.no_live
 
     if args.quick:
-        args.scenario = "tiny"
         args.iterations = 1
         args.warmup = 0
 
@@ -754,8 +702,9 @@ def main() -> None:
             args.scenario = "colossal"
 
     if args.real_data:
-        if real_data_available():
-            real_entries = load_real_data_entries()
+        real_dir = os.path.join(os.path.dirname(__file__), "real_data", "3.12.2025")
+        if real_data_available(real_dir):
+            real_entries = load_real_data_entries(real_dir)
             if real_entries:
                 total_mb = sum(len(c) for c in real_entries.values()) / 1_048_576
                 print(
@@ -763,17 +712,25 @@ def main() -> None:
                 )
                 registry["real_data"] = real_entries
             else:
-                print("  Warning: --real-data requested but real_data/ is empty")
+                print(
+                    "  Warning: --real-data requested but real_data/3.12.2025/ is empty"
+                )
         else:
-            print("  Warning: --real-data requested but tests/real_data/ not found")
+            print(
+                "  Warning: --real-data requested but "
+                "tests/real_data/3.12.2025/ not found"
+            )
 
     if args.scenario == "all":
-        scenario_order = ["tiny", "small", "standard"]
-        for name in ["text_heavy", "binary_heavy", "mixed"]:
-            if name in registry:
-                scenario_order.append(name)
-        if args.colossal:
-            scenario_order.append("colossal")
+        if args.quick:
+            scenario_order = ["tiny"]
+        else:
+            scenario_order = ["tiny", "small", "standard"]
+            for name in ["text_heavy", "binary_heavy", "mixed"]:
+                if name in registry:
+                    scenario_order.append(name)
+            if args.colossal:
+                scenario_order.append("colossal")
         if args.real_data and "real_data" in registry:
             scenario_order.append("real_data")
     else:
@@ -789,8 +746,8 @@ def main() -> None:
         all_modes = [m for m in all_modes if m[0] == "v1"]
     elif args.mode == "v2":
         all_modes = [m for m in all_modes if m[0] == "v2"]
-    elif args.mode == "v3":
-        all_modes = [m for m in all_modes if m[0] == "v3"]
+    elif args.mode == "zip":
+        all_modes = [m for m in all_modes if m[0] == "zip"]
 
     if not all_modes:
         print("No matching modes found.")
@@ -818,9 +775,9 @@ def main() -> None:
             )
 
             scenario_metrics: List[Metrics] = []
-            for mode, compress, graph in all_modes:
+            for mode, compress in all_modes:
                 label = _MODE_LABELS.get(
-                    _mode_key(mode, compress, graph), f"{mode} c={compress} g={graph}"
+                    _mode_key(mode, compress), f"{mode} c={compress}"
                 )
                 _plain_print_progress(scenario, label, 0, 0)
                 try:
@@ -828,7 +785,6 @@ def main() -> None:
                         entries,
                         mode=mode,
                         compress=compress,
-                        graph=graph,
                         iterations=args.iterations,
                         warmup=args.warmup,
                     )
@@ -840,7 +796,6 @@ def main() -> None:
                             "error": str(e),
                             "mode": mode,
                             "compress": compress,
-                            "graph_dedup": graph,
                             "ratio": 0,
                             "archive_size": 0,
                             "pack_time": 0,
@@ -920,12 +875,12 @@ def main() -> None:
                 f"[yellow]{scenario}", total=len(all_modes)
             )
 
-            for mode, compress, graph in all_modes:
+            for mode, compress in all_modes:
                 label = _MODE_LABELS.get(
-                    _mode_key(mode, compress, graph),
-                    f"{mode} c={compress} g={graph}",
+                    _mode_key(mode, compress),
+                    f"{mode} c={compress}",
                 )
-                mode_label = f"[cyan]{mode}[/cyan] {'c' if compress else 'nc'} {'g' if graph else 'ng'}"
+                mode_label = f"[cyan]{mode}[/cyan] {'c' if compress else 'nc'}"
 
                 # Update info panel
                 elapsed = time.time() - start_time
@@ -963,7 +918,6 @@ def main() -> None:
                         entries,
                         mode=mode,
                         compress=compress,
-                        graph=graph,
                         iterations=args.iterations,
                         warmup=args.warmup,
                     )
@@ -973,7 +927,6 @@ def main() -> None:
                     err_metrics: Metrics = {
                         "mode": mode,
                         "compress": compress,
-                        "graph_dedup": graph,
                         "error": str(e),
                         "ratio": 0,
                         "archive_size": 0,

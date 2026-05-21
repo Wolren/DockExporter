@@ -230,7 +230,7 @@ class TestChunkStore:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 3.  ROUNDTRIP TESTS — v1, v2, v3
+# 3.  ROUNDTRIP TESTS — v1, v2
 # ═══════════════════════════════════════════════════════════════════
 
 
@@ -310,71 +310,16 @@ class TestPackUnpackV2:
         assert unpack_woof(data) == {}
 
 
-class TestPackUnpackV3:
-    def test_roundtrip(self, test_entries):
-        packed = pack_woof(test_entries, compress=True, graph_dedup=True)
-        unpacked = unpack_woof(packed)
-        assert _entries_equal(unpacked, test_entries)
-
-    def test_no_compress(self, test_entries):
-        packed = pack_woof(test_entries, compress=False, graph_dedup=True)
-        unpacked = unpack_woof(packed)
-        assert _entries_equal(unpacked, test_entries)
-
-    def test_header(self, test_entries):
-        packed = pack_woof(test_entries, compress=True, graph_dedup=True)
-        magic, ver, flags, _xor_sz, _raw = _parse_header(packed)
-        assert magic == WOOF_MAGIC
-        assert ver == WOOF_VERSION_V3
-        assert flags & FLAG_HAS_CHUNK_STORE
-        assert flags & FLAG_HAS_RESOURCE_TABLE
-        assert flags & FLAG_XOR
-
-    def test_resource_dedup(self):
-        """Multiple projects sharing symbols should dedup via resource table."""
-        sym_xml = (
-            '<symbol name="shared" type="fill"><layer class="SimpleFill"/></symbol>'
-        )
-        entries = {
-            "a.qgs": ("<qgis><symbols>" + sym_xml + "</symbols></qgis>").encode(
-                "utf-8"
-            ),
-            "b.qgs": ("<qgis><symbols>" + sym_xml + "</symbols></qgis>").encode(
-                "utf-8"
-            ),
-        }
-        packed = pack_woof(entries, compress=True, graph_dedup=True)
-        unpacked = unpack_woof(packed)
-        assert _entries_equal(unpacked, entries)
-
-    def test_resource_table_smaller_than_raw(self):
-        """Resource table should deduplicate shared symbols."""
-        shared = '<symbol name="s" type="fill"><layer class="SimpleFill"><prop k="color" v="red"/></layer></symbol>'
-        entries = {}
-        for i in range(50):
-            entries[f"layer_{i:04d}.qgs"] = (
-                f"<qgis><symbols>{shared}</symbols></qgis>"
-            ).encode("utf-8")
-        packed = pack_woof(entries, compress=True, graph_dedup=True)
-        unpacked = unpack_woof(packed)
-        assert _entries_equal(unpacked, entries)
-
-
 class TestRoundtripEdgeCases:
     def test_empty_archive(self):
-        for mode in ["v1", "v2", "v3"]:
-            kwargs = {"use_v2": mode != "v1", "graph_dedup": mode == "v3"}
-            packed = pack_woof({}, **kwargs)
+        for use_v2 in [True, False]:
+            packed = pack_woof({}, compress=True, use_v2=use_v2)
             assert unpack_woof(packed) == {}
 
     def test_single_byte_file(self):
-        for kwargs in [
-            {"use_v2": False},
-            {"use_v2": True},
-            {"graph_dedup": True},
-        ]:
+        for use_v2 in [True, False]:
             entries = {"a.txt": b"x"}
-            packed = pack_woof(entries, **kwargs)
+            packed = pack_woof(entries, compress=True, use_v2=use_v2)
             assert unpack_woof(packed) == entries
 
     def test_large_binary(self):
@@ -390,8 +335,8 @@ class TestRoundtripEdgeCases:
             "a/b/c/d/e/f/file.txt": b"deep",
             "x/y/z.geojson": generate_geojson(10).encode("utf-8"),
         }
-        for graph_dedup in [True, False]:
-            packed = pack_woof(entries, graph_dedup=graph_dedup)
+        for use_v2 in [True, False]:
+            packed = pack_woof(entries, compress=True, use_v2=use_v2)
             assert unpack_woof(packed) == entries
 
     def test_special_chars_in_names(self):
@@ -400,29 +345,18 @@ class TestRoundtripEdgeCases:
             "data - copy.geojson": b'{"type":"FeatureCollection","features":[]}',
             "roads & rails.csv": b"id,name\n1,test",
         }
-        for kwargs in [
-            {"use_v2": False},
-            {"use_v2": True},
-            {"graph_dedup": True},
-        ]:
-            packed = pack_woof(entries, **kwargs)
+        for use_v2 in [True, False]:
+            packed = pack_woof(entries, compress=True, use_v2=use_v2)
             unpacked = unpack_woof(packed)
-            if kwargs.get("graph_dedup"):
-                assert _entries_equal(unpacked, entries)
-            else:
-                assert unpacked == entries
+            assert unpacked == entries
 
     def test_unicode_content(self):
         entries = {
             "data.geojson": '{"name": "café"}'.encode("utf-8"),
             "metadata.xml": '<meta lang="fr">élève</meta>'.encode("utf-8"),
         }
-        for kwargs in [
-            {"use_v2": False},
-            {"use_v2": True},
-            {"graph_dedup": True},
-        ]:
-            packed = pack_woof(entries, **kwargs)
+        for use_v2 in [True, False]:
+            packed = pack_woof(entries, compress=True, use_v2=use_v2)
             assert unpack_woof(packed) == entries
 
 
@@ -432,7 +366,7 @@ class TestRoundtripEdgeCases:
 
 
 class TestCrossVersion:
-    """v1/v2/v3 archives must all be readable by unpack_woof."""
+    """v1 and v2 archives must both be readable by unpack_woof."""
 
     def test_v1_unpacked_by_auto(self, test_entries):
         packed = pack_woof(test_entries, compress=True, use_v2=False)
@@ -442,26 +376,14 @@ class TestCrossVersion:
         packed = pack_woof(test_entries, compress=True, use_v2=True)
         assert unpack_woof(packed) == test_entries
 
-    def test_v3_unpacked_by_auto(self, test_entries):
-        packed = pack_woof(test_entries, compress=True, graph_dedup=True)
-        assert _entries_equal(unpack_woof(packed), test_entries)
-
     def test_mixed_compress_modes(self, test_entries):
         """Unpack must handle compress=True and compress=False from any version."""
         for use_v2 in [True, False]:
-            for graph in [True, False]:
-                if graph and not use_v2:
-                    continue  # v3 requires use_v2
-                for comp in [True, False]:
-                    kwargs = {"compress": comp, "use_v2": use_v2}
-                    if graph:
-                        kwargs["graph_dedup"] = True
-                    packed = pack_woof(test_entries, **kwargs)
-                    result = unpack_woof(packed)
-                    if graph:
-                        assert _entries_equal(result, test_entries), f"Failed: {kwargs}"
-                    else:
-                        assert result == test_entries, f"Failed: {kwargs}"
+            for comp in [True, False]:
+                kwargs = {"compress": comp, "use_v2": use_v2}
+                packed = pack_woof(test_entries, **kwargs)
+                result = unpack_woof(packed)
+                assert result == test_entries, f"Failed: {kwargs}"
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -473,23 +395,14 @@ class TestDirectoryPacking:
     def test_pack_from_directory_roundtrip(self, test_entries, temp_dir):
         write_test_data_to_disk(temp_dir, test_entries)
         for use_v2 in [True, False]:
-            for graph in [True, False]:
-                if graph and not use_v2:
-                    continue
-                kwargs = {"compress": True, "use_v2": use_v2}
-                if graph:
-                    kwargs["graph_dedup"] = True
-                packed = pack_woof_from_directory(temp_dir, **kwargs)
-                unpacked = unpack_woof(packed)
-                # Compare normalized (paths are OS-native)
-                normalized = {}
-                for name, content in test_entries.items():
-                    norm = name.replace("/", os.sep).replace("\\", os.sep)
-                    normalized[norm] = content
-                if graph:
-                    assert _entries_equal(unpacked, normalized)
-                else:
-                    assert unpacked == normalized
+            packed = pack_woof_from_directory(temp_dir, compress=True, use_v2=use_v2)
+            unpacked = unpack_woof(packed)
+            # Compare normalized (paths are OS-native)
+            normalized = {}
+            for name, content in test_entries.items():
+                norm = name.replace("/", os.sep).replace("\\", os.sep)
+                normalized[norm] = content
+            assert unpacked == normalized
 
     def test_extract_to_directory(self, test_entries, temp_dir):
         packed = pack_woof(test_entries, compress=True, use_v2=True)
@@ -502,7 +415,7 @@ class TestDirectoryPacking:
                 assert f.read() == content, f"Content mismatch: {arcname}"
 
     def test_extract_preserves_subdirs(self, test_entries, temp_dir):
-        packed = pack_woof(test_entries, compress=True, graph_dedup=True)
+        packed = pack_woof(test_entries, compress=True, use_v2=True)
         extract_woof_to_directory(packed, temp_dir)
         assert os.path.isdir(os.path.join(temp_dir, "data"))
         assert os.path.isdir(os.path.join(temp_dir, "styles"))
@@ -561,12 +474,8 @@ class TestSizeSanity:
 
     def test_declared_raw_size(self, test_entries):
         total = sum(len(c) for c in test_entries.values())
-        for kwargs in [
-            {"use_v2": False},
-            {"use_v2": True},
-            {"graph_dedup": True},
-        ]:
-            packed = pack_woof(test_entries, compress=True, **kwargs)
+        for use_v2 in [True, False]:
+            packed = pack_woof(test_entries, compress=True, use_v2=use_v2)
             info = _archive_size_info(packed)
             assert info["raw_total_declared"] == total
 
@@ -592,11 +501,6 @@ class TestDeterminism:
     def test_v2_deterministic(self, test_entries):
         a = pack_woof(test_entries, compress=True, use_v2=True)
         b = pack_woof(test_entries, compress=True, use_v2=True)
-        assert a == b
-
-    def test_v3_deterministic(self, test_entries):
-        a = pack_woof(test_entries, compress=True, graph_dedup=True)
-        b = pack_woof(test_entries, compress=True, graph_dedup=True)
         assert a == b
 
 
@@ -631,20 +535,12 @@ class TestStress:
         entries = make_standard_test_set()
         # Add some big binaries
         entries["big.tiff"] = generate_binary_blob(1024)
-        for graph in [True, False]:
-            for use_v2 in [True, False]:
-                if graph and not use_v2:
-                    continue
-                for comp in [True, False]:
-                    kwargs = {"compress": comp, "use_v2": use_v2}
-                    if graph:
-                        kwargs["graph_dedup"] = True
-                    packed = pack_woof(entries, **kwargs)
-                    result = unpack_woof(packed)
-                    if graph:
-                        assert _entries_equal(result, entries)
-                    else:
-                        assert result == entries
+        for use_v2 in [True, False]:
+            for comp in [True, False]:
+                kwargs = {"compress": comp, "use_v2": use_v2}
+                packed = pack_woof(entries, **kwargs)
+                result = unpack_woof(packed)
+                assert result == entries
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -663,23 +559,6 @@ class TestScenarioFidelity:
         }
         packed = pack_woof(entries, compress=True, use_v2=True)
         assert unpack_woof(packed) == entries
-
-    def test_qgs_project_roundtrip_v3(self):
-        qgs = generate_qgs_project(num_layers=5, shared_symbols=3)
-        entries = {
-            "project.qgs": qgs.encode("utf-8"),
-            "roads.geojson": generate_geojson(10).encode("utf-8"),
-        }
-        packed = pack_woof(entries, compress=True, graph_dedup=True)
-        assert _entries_equal(unpack_woof(packed), entries)
-
-    def test_qml_styles_roundtrip_v3(self):
-        entries = {
-            "roads.qml": generate_qml_style(5).encode("utf-8"),
-            "parcels.qml": generate_qml_style(5).encode("utf-8"),
-        }
-        packed = pack_woof(entries, compress=True, graph_dedup=True)
-        assert _entries_equal(unpack_woof(packed), entries)
 
     def test_csv_geo_csv(self):
         entries = {
@@ -730,13 +609,6 @@ class TestRealData:
             pytest.skip("No real data found in tests/real_data/")
         packed = pack_woof(real_data_entries, compress=True, use_v2=True)
         assert unpack_woof(packed) == real_data_entries
-
-    def test_roundtrip_v3(self, real_data_entries):
-        if not real_data_entries:
-            pytest.skip("No real data found in tests/real_data/")
-        packed = pack_woof(real_data_entries, compress=True, graph_dedup=True)
-        unpacked = unpack_woof(packed)
-        assert _entries_equal(unpacked, real_data_entries)
 
     def test_no_compress_v2(self, real_data_entries):
         if not real_data_entries:

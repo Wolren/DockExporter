@@ -94,3 +94,4 @@ resources.qrc
 ui_*.py
 *.ui
 /.opencode/
+/tests/real_data/

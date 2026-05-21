@@ -9,18 +9,18 @@ Design:
   - Content-defined chunking via Buzhash rolling hash
   - Deduplicated chunk store — identical chunk content stored once
   - GIS binaries (GPKG, TIFF, SHP) stored inline raw — already compressed
-  - XOR obfuscation prevents accidental opening by generic tools
+  - GIS binaries (GPKG, TIFF, SHP, PNG, JPG) stored inline raw
 
 Structure (v2, all little-endian):
   [0-3]    Magic: b"WOOF"
   [4-7]    Version: uint32
-  [8-15]   Header flags: uint64 (bit 0= XOR, bit 1=has chunk store)
-  [16-23]  XOR-obfuscated payload size: uint64
-  [24-31]  Unobfuscated payload size (for validation): uint64
+  [8-15]   Header flags: uint64 (bit 1=has chunk store)
+  [16-23]  Payload size: uint64
+  [24-31]  Total raw size: uint64
   [32+]    Payload
 
   v2 Payload:
-    [Chunk Store]     — zstd-compressed, deduplicated chunks
+    [Chunk Store]     — optional, zstd-compressed deduplicated chunks
     [File Table]      — file entries referencing chunks (or inline data)
 
   Chunk Store:
@@ -62,6 +62,7 @@ WOOF_VERSION_V2 = 2
 FLAG_XOR = 1
 FLAG_HAS_CHUNK_STORE = 2
 FLAG_ENTRY_CHUNKED = 1
+FLAG_ENTRY_ZSTD = 2
 
 WOOF_XOR_KEY = 0xA5
 HEADER_SIZE = 32
@@ -71,7 +72,6 @@ HASH_SIZE = 32  # SHA-256 bytes
 _COMPRESSIBLE_EXTS = frozenset(
     {
         ".qgs",
-        ".qgz",
         ".qml",
         ".qlr",
         ".xml",
