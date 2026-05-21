@@ -20,7 +20,10 @@ import argparse
 import io
 import math
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 import tracemalloc
 import zipfile
@@ -114,7 +117,22 @@ _MODE_LABELS = {
     ("v2", True): "v2 (zstd+CDC, compress)",
     ("zip", False): "ZIP (store)",
     ("zip", True): "ZIP (deflate)",
+    ("rar", False): "RAR (store)",
+    ("rar", True): "RAR (compress)",
 }
+
+_RAR_PATH: str | None = None
+rar_candidates = [
+    "rar.exe",
+    r"C:\Program Files\WinRAR\rar.exe",
+    r"C:\Program Files (x86)\WinRAR\rar.exe",
+]
+for _c in rar_candidates:
+    _rp = shutil.which(_c) if "/" not in _c and "\\" not in _c else _c
+    if _rp and os.path.isfile(_rp):
+        _RAR_PATH = _rp
+        break
+_HAVE_RAR = _RAR_PATH is not None
 
 
 def _mode_key(mode: str, compress: bool):
@@ -130,6 +148,8 @@ def _modes_to_benchmark(quick: bool = False) -> List[Tuple[str, bool]]:
         ("zip", False),
         ("zip", True),
     ]
+    if _HAVE_RAR:
+        modes += [("rar", False), ("rar", True)]
     if quick:
         modes = [m for m in modes if m[1]]
     return modes
@@ -152,6 +172,7 @@ def _bench_one(
         "raw_size": sum(len(c) for c in entries.values()),
     }
 
+    _rar_tmp: str | None = None
     if mode == "zip":
         level = zipfile.ZIP_DEFLATED if compress else zipfile.ZIP_STORED
 
@@ -168,6 +189,61 @@ def _bench_one(
             with zipfile.ZipFile(buf, "r") as zf:
                 for name in zf.namelist():
                     result[name] = zf.read(name)
+            return result
+    elif mode == "rar":
+        _rar_tmp = tempfile.mkdtemp(prefix="woof_rar_")
+        _rar_src = os.path.join(_rar_tmp, "src")
+        _rar_archive = os.path.join(_rar_tmp, "bench.rar")
+        _rar_extract = os.path.join(_rar_tmp, "ext")
+
+        for name, data in entries.items():
+            full = os.path.join(_rar_src, name)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "wb") as f:
+                f.write(data)
+        os.makedirs(_rar_extract, exist_ok=True)
+        _rar_level = "5" if compress else "0"
+
+        def _pack(e):
+            if os.path.exists(_rar_archive):
+                os.remove(_rar_archive)
+            subprocess.run(
+                [
+                    _RAR_PATH,
+                    "a",
+                    "-r",
+                    "-ep1",
+                    f"-m{_rar_level}",
+                    "-y",
+                    _rar_archive,
+                    ".",
+                ],
+                capture_output=True,
+                check=True,
+                cwd=_rar_src,
+            )
+            with open(_rar_archive, "rb") as f:
+                return f.read()
+
+        def _unpack(packed):
+            with open(_rar_archive, "wb") as f:
+                f.write(packed)
+            if os.path.exists(_rar_extract):
+                shutil.rmtree(_rar_extract)
+            os.makedirs(_rar_extract, exist_ok=True)
+            subprocess.run(
+                [_RAR_PATH, "x", "-y", _rar_archive],
+                capture_output=True,
+                check=True,
+                cwd=_rar_extract,
+            )
+            result = {}
+            for dirpath, _, filenames in os.walk(_rar_extract):
+                for fn in filenames:
+                    full = os.path.join(dirpath, fn)
+                    rel = os.path.relpath(full, _rar_extract).replace(os.sep, "/")
+                    with open(full, "rb") as f:
+                        result[rel] = f.read()
             return result
     else:
         kwargs: dict = {"compress": compress}
@@ -287,6 +363,8 @@ def _bench_one(
         except Exception as exc:
             meta["parse_error"] = str(exc)
 
+    if _rar_tmp is not None:
+        shutil.rmtree(_rar_tmp, ignore_errors=True)
     return meta
 
 
@@ -540,16 +618,13 @@ def _build_report(
             lines.append(_fmt_row([label] + row, widths))
 
         lines.append(f"\n**Ratio comparison (higher = better):**")
-        lines.append(f"\n| Mode | Ratio | Bar |")
-        lines.append(f"|------|-------|-----|")
-        max_ratio = max(m["ratio"] for m in metrics_list)
+        lines.append(f"\n| Mode | Ratio |")
+        lines.append(f"|------|-------|")
         for m in sorted(metrics_list, key=lambda x: x["ratio"], reverse=True):
             label = _MODE_LABELS.get(
                 _mode_key(m["mode"], m["compress"]), f"{m['mode']}"
             )
-            bar = _bar(float(m["ratio"]), max_ratio)
-            pct = int((m["ratio"] / max_ratio) * 100) if max_ratio > 0 else 0
-            lines.append(f"| {label} | {m['ratio']:.2f}x | {bar} |")
+            lines.append(f"| {label} | {m['ratio']:.2f}x |")
 
     # Cross-scenario summary
     lines.append(f"\n{_HEADER_SEP}")
@@ -634,7 +709,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mode",
-        choices=["all", "v1", "v2", "zip"],
+        choices=["all", "v1", "v2", "zip", "rar"],
         default="all",
         help="Which compression mode to test (default: all)",
     )
@@ -748,6 +823,8 @@ def main() -> None:
         all_modes = [m for m in all_modes if m[0] == "v2"]
     elif args.mode == "zip":
         all_modes = [m for m in all_modes if m[0] == "zip"]
+    elif args.mode == "rar":
+        all_modes = [m for m in all_modes if m[0] == "rar"]
 
     if not all_modes:
         print("No matching modes found.")

@@ -9,7 +9,7 @@ from typing import Dict, Generator
 
 import pytest
 
-from .test_data_gen import (
+from test_data_gen import (
     get_real_data_dir,
     load_real_data_entries,
     make_standard_test_set,
