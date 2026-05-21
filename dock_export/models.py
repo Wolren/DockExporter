@@ -1,60 +1,58 @@
-"""
-models.py  –  Pure-data definitions for the spec-driven export engine.
+"""Pure-data classes: ExportSpec (single export job) and ExportResult (outcome)."""
 
-An ExportSpec fully describes ONE export job.  It never holds a reference
-to a live QgsMapLayer object; it stores the *layer ID* instead so the
-engine can look it up at write time without keeping layer objects alive.
-"""
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
+
+
+class StyleMode:
+    """String constants for style export modes."""
+
+    NONE = "none"
+    QML = "qml"
+    SLD = "sld"
+    BOTH = "both"
+    EMBED = "embed"
 
 
 @dataclass
 class ExportSpec:
-    """Describes a single layer export operation.
+    """Describes a single layer export job. Pure data -- never holds layer references.
+
+    Stores the source layer ID instead of a QgsMapLayer object so the engine
+    looks it up at write time.
 
     Parameters
     ----------
     source_layer_id : str
         ID of the source QgsMapLayer in the current project.
     export_name : str
-        Output layer/table name and (for single-file formats) the file stem.
-        This is set independently of the live layer's display name.
+        Output layer/table name and file stem. Independent of live layer name.
     target_mode : str
-        ``'single'`` → write each layer to its own file.
-        ``'gpkg'``   → append as a table inside one shared GeoPackage.
+        'single' -> each layer to its own file; 'gpkg' -> table in one GeoPackage.
     output_path : str
-        For ``'single'``: directory path where the file will be written.
-        For ``'gpkg'``:   full path to the target ``.gpkg`` file.
+        For 'single': output directory. For 'gpkg': full .gpkg path.
     driver : str
-        OGR driver string: ``'GPKG'``, ``'ESRI Shapefile'``,
-        ``'GeoJSON'``, ``'KML'``; or raster sentinel ``'GTiff'``.
+        OGR driver string: 'GPKG', 'ESRI Shapefile', 'GeoJSON', 'KML',
+        'FlatGeobuf', 'GTiff'.
     filter_expression : str
-        Optional QGIS feature filter expression (WHERE clause semantics).
-        Empty string means "all features".
+        Optional QGIS expression filter. Empty = all features.
     style_mode : str
-        One of ``'none'``, ``'qml'``, ``'sld'``, ``'both'``, ``'embed'``.
-        ``'embed'`` writes the QML into the layer's style table inside the
-        GeoPackage.  It is only meaningful when ``driver == 'GPKG'``.
+        One of StyleMode constants: NONE, QML, SLD, BOTH, EMBED.
     replace_in_project : bool
-        When ``True``, after a successful export the engine calls
-        ``setDataSource`` on the original project layer so it points to the
-        newly written file.
+        If True, calls setDataSource on the project layer after successful export.
+    target_crs_authid : str
+        Target CRS in WKT or EPSG:AUTHID form. Empty = source layer CRS.
     """
 
     source_layer_id: str = ""
     export_name: str = ""
-    target_mode: str = "single"      # 'single' | 'gpkg'
-    output_path: str = ""            # dir for single, .gpkg path for gpkg
+    target_mode: str = "single"
+    output_path: str = ""
     driver: str = "GPKG"
     filter_expression: str = ""
-    style_mode: str = "none"         # 'none'|'qml'|'sld'|'both'|'embed'
+    style_mode: str = "none"
     replace_in_project: bool = False
     target_crs_authid: str = ""
-
-    # ------------------------------------------------------------------ #
-    # Helpers                                                              #
-    # ------------------------------------------------------------------ #
 
     @property
     def is_raster_driver(self) -> bool:
@@ -74,3 +72,14 @@ class ExportSpec:
             "JPEG": ".jpg",
         }
         return mapping.get(self.driver, ".gpkg")
+
+
+@dataclass
+class ExportResult:
+    """Holds the outcome of a single ExportSpec execution."""
+
+    spec: ExportSpec
+    success: bool = False
+    output_path: str = ""
+    error: str = ""
+    features_written: int = 0

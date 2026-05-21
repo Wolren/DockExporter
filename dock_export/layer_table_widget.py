@@ -1,21 +1,5 @@
-"""
-layer_table_widget.py  –  Editable layer table for the export dock.
+"""Editable layer table widget. Displays project layers with export names, format overrides, filters, and CRS settings."""
 
-Each row represents one layer with:
-  Col 0 – Type (vector/raster icon)
-  Col 1 – Source Name (read-only, live layer display name)
-  Col 2 – Export Name (editable inline – NEVER touches the live layer)
-  Col 3 – Filter (indicator badge)
-  Col 4 – CRS (picked via native QGIS CRS selector)
-
-Selection is row-based:
-  * click anywhere on a row to select it
-  * Shift/Ctrl selection works natively
-  * selected rows are the rows exported
-
-Export names are stored inside the table model itself; they are read by
-the export engine at write time and injected into SaveVectorOptions.layerName.
-"""
 from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
@@ -24,12 +8,12 @@ from qgis.PyQt.QtCore import Qt, pyqtSignal
 from qgis.PyQt.QtGui import QBrush, QColor, QIcon, QPalette
 from qgis.PyQt.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QHeaderView,
     QTableWidget,
     QTableWidgetItem,
     QStyle,
 )
-
 from qgis.core import (
     QgsApplication,
     QgsCoordinateReferenceSystem,
@@ -42,109 +26,103 @@ from qgis.gui import QgsProjectionSelectionDialog
 
 from .export_engine import layer_export_block_reason
 
-
-# --------------------------------------------------------------------------- #
-# Column indices                                                              #
-# --------------------------------------------------------------------------- #
-COL_TYPE   = 0
+COL_TYPE = 0
 COL_SOURCE = 1
 COL_EXPORT = 2
-COL_FILTER = 3
-COL_CRS    = 4
-N_COLS     = 5
+COL_FORMAT = 3
+COL_FILTER = 4
+COL_CRS = 5
+N_COLS = 6
+
+VECTOR_FORMATS = [
+    ("Default", ""),
+    ("GPKG", "GPKG"),
+    ("Shapefile", "ESRI Shapefile"),
+    ("GeoJSON", "GeoJSON"),
+    ("KML", "KML"),
+    ("FlatGeobuf", "FlatGeobuf"),
+]
+RASTER_FORMATS = [
+    ("Default", ""),
+    ("GeoTIFF", "GTiff"),
+]
+FORMAT_DEFAULT_KEY = ""
 
 
 class LayerTableWidget(QTableWidget):
-    """
-    A QTableWidget that manages ExportSpec-like rows for the dock.
+    """Editable layer table. Export names stored internally, never touch live layers.
+
+    Columns: Type icon, Source Name (read-only), Export Name (editable),
+    Format (combo), Filter badge, CRS (double-click for native picker).
 
     Signals
     -------
     selection_changed(layer_ids: list[str])
-        Emitted when the set of selected rows changes.
     export_name_changed(layer_id: str, new_name: str)
-        Emitted when the user edits an Export Name cell.
     crs_changed(layer_id: str, authid: str)
-        Emitted when the target CRS is changed from the CRS picker.
+    format_changed(layer_id: str, driver: str)
     """
 
     selection_changed = pyqtSignal(list)
     export_name_changed = pyqtSignal(str, str)
     crs_changed = pyqtSignal(str, str)
+    format_changed = pyqtSignal(str, str)
 
-    def __init__(self, parent=None):
+    def __init__(self, show_format: bool = True, parent=None):
         super().__init__(0, N_COLS, parent)
-
+        self._show_format = show_format
         self._export_names: Dict[str, str] = {}
+        self._format_overrides: Dict[str, str] = {}
         self._filters: Dict[str, str] = {}
         self._target_crs: Dict[str, str] = {}
         self._export_warnings: Dict[str, str] = {}
 
         self._setup_header()
         self._setup_appearance()
-
         self.itemChanged.connect(self._on_item_changed)
         self.itemSelectionChanged.connect(self._emit_selection_changed)
         self.cellDoubleClicked.connect(self._on_cell_double_clicked)
 
-    # ------------------------------------------------------------------ #
-    # Setup                                                               #
-    # ------------------------------------------------------------------ #
-
     def _setup_header(self) -> None:
-        self.setHorizontalHeaderLabels([
-            "", "Source Name", "Export Name", "Filter", "CRS"
-        ])
+        headers = ["", "Source Name", "Export Name", "Format", "Filter", "CRS"]
+        self.setHorizontalHeaderLabels(headers)
         hh = self.horizontalHeader()
-        hh.setSectionResizeMode(COL_TYPE,   QHeaderView.ResizeMode.Fixed)
+        hh.setSectionResizeMode(COL_TYPE, QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(COL_SOURCE, QHeaderView.ResizeMode.Stretch)
         hh.setSectionResizeMode(COL_EXPORT, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(COL_FORMAT, QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(COL_FILTER, QHeaderView.ResizeMode.Fixed)
-        hh.setSectionResizeMode(COL_CRS,    QHeaderView.ResizeMode.Fixed)
+        hh.setSectionResizeMode(COL_CRS, QHeaderView.ResizeMode.Fixed)
         self.setColumnWidth(COL_TYPE, 34)
+        self.setColumnWidth(COL_FORMAT, 90 if self._show_format else 0)
         self.setColumnWidth(COL_FILTER, 64)
         self.setColumnWidth(COL_CRS, 112)
+        self.setColumnHidden(COL_FORMAT, not self._show_format)
 
     def _setup_appearance(self) -> None:
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setEditTriggers(
-            QAbstractItemView.EditTrigger.DoubleClicked |
-            QAbstractItemView.EditTrigger.EditKeyPressed |
-            QAbstractItemView.EditTrigger.SelectedClicked
+            QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed
+            | QAbstractItemView.EditTrigger.SelectedClicked
         )
         self.setAlternatingRowColors(True)
         self.verticalHeader().setVisible(False)
         self.setShowGrid(False)
 
-    # ------------------------------------------------------------------ #
-    # Public API – populate / refresh                                     #
-    # ------------------------------------------------------------------ #
-
     def populate(
-        self,
-        layers: List[QgsMapLayer],
-        type_filter: Optional[str] = None,
+        self, layers: List[QgsMapLayer], type_filter: Optional[str] = None
     ) -> None:
-        """
-        Rebuild the table from *layers*.
-
-        Parameters
-        ----------
-        layers : list of QgsMapLayer
-        type_filter : 'vector' | 'raster' | None (both)
-        """
+        """Populate the table with the given list of layers."""
         prev_selected = set(self.selected_layer_ids())
-
         self.blockSignals(True)
         self.setRowCount(0)
 
         rows_to_reselect: List[int] = []
-
         for layer in layers:
             is_vector = isinstance(layer, QgsVectorLayer)
             is_raster = isinstance(layer, QgsRasterLayer)
-
             if type_filter == "vector" and not is_vector:
                 continue
             if type_filter == "raster" and not is_raster:
@@ -156,43 +134,66 @@ class LayerTableWidget(QTableWidget):
             block_reason = layer_export_block_reason(layer)
             self._export_warnings[layer.id()] = block_reason
 
-            # Col 0 – type icon
             type_item = QTableWidgetItem("")
             type_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             type_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             type_item.setData(Qt.ItemDataRole.UserRole, layer.id())
             type_item.setIcon(self._icon_for_layer(layer))
-            type_tooltip = "Vector layer" if is_vector else "Raster layer" if is_raster else "Other layer"
+            type_tooltip = (
+                "Vector layer"
+                if is_vector
+                else "Raster layer"
+                if is_raster
+                else "Other layer"
+            )
             if block_reason:
                 type_tooltip += f"\n\nNot exportable:\n{block_reason}"
             type_item.setToolTip(type_tooltip)
             self.setItem(row, COL_TYPE, type_item)
 
-            # Col 1 – source name (read-only but selectable)
             src_item = QTableWidgetItem(layer.name())
             src_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             src_item.setData(Qt.ItemDataRole.UserRole, layer.id())
             if block_reason:
                 src_item.setToolTip(f"Not exportable:\n{block_reason}")
                 src_item.setForeground(QBrush(QColor("#9a3412")))
-                src_item.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning))
+                src_item.setIcon(
+                    self.style().standardIcon(
+                        QStyle.StandardPixmap.SP_MessageBoxWarning
+                    )
+                )
             self.setItem(row, COL_SOURCE, src_item)
 
-            # Col 2 – export name (editable)
             export_name = self._export_names.get(layer.id(), layer.name())
             exp_item = QTableWidgetItem(export_name)
             exp_item.setFlags(
-                Qt.ItemFlag.ItemIsEnabled |
-                Qt.ItemFlag.ItemIsSelectable |
-                Qt.ItemFlag.ItemIsEditable
+                Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsSelectable
+                | Qt.ItemFlag.ItemIsEditable
             )
             exp_item.setData(Qt.ItemDataRole.UserRole, layer.id())
             self._apply_export_name_style(exp_item, export_name, layer.name())
             self.setItem(row, COL_EXPORT, exp_item)
 
-            # Col 3 – filter badge
+            if self._show_format:
+                formats = VECTOR_FORMATS if is_vector else RASTER_FORMATS
+                combo = QComboBox()
+                for label, _driver in formats:
+                    combo.addItem(label)
+                current_driver = self._format_overrides.get(layer.id(), "")
+                for idx, (_label, driver) in enumerate(formats):
+                    if driver == current_driver:
+                        combo.setCurrentIndex(idx)
+                        break
+                combo.currentIndexChanged.connect(
+                    lambda _idx, lid=layer.id(), f=formats: self._on_format_changed(
+                        lid, f
+                    )
+                )
+                self.setCellWidget(row, COL_FORMAT, combo)
+
             filt = self._filters.get(layer.id(), "")
-            filt_item = QTableWidgetItem("⚡" if filt else "")
+            filt_item = QTableWidgetItem("\u26a1" if filt else "")
             filt_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             filt_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             filt_item.setData(Qt.ItemDataRole.UserRole, layer.id())
@@ -201,14 +202,10 @@ class LayerTableWidget(QTableWidget):
                 filt_item.setForeground(QBrush(QColor("#e67e22")))
             self.setItem(row, COL_FILTER, filt_item)
 
-            # Col 4 – target CRS (native CRS picker on double-click)
             default_crs = layer.crs().authid() if layer.crs().isValid() else ""
             target_crs = self._target_crs.get(layer.id(), default_crs)
             crs_item = QTableWidgetItem(target_crs)
-            crs_item.setFlags(
-                Qt.ItemFlag.ItemIsEnabled |
-                Qt.ItemFlag.ItemIsSelectable
-            )
+            crs_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             crs_item.setData(Qt.ItemDataRole.UserRole, layer.id())
             self._apply_crs_style(crs_item)
             self.setItem(row, COL_CRS, crs_item)
@@ -217,40 +214,77 @@ class LayerTableWidget(QTableWidget):
                 rows_to_reselect.append(row)
 
         self.blockSignals(False)
-
         for row in rows_to_reselect:
             self.selectRow(row)
-
         self._emit_selection_changed()
 
-    # ------------------------------------------------------------------ #
-    # External filter update                                              #
-    # ------------------------------------------------------------------ #
+    def _on_format_changed(self, layer_id: str, formats: List[Tuple[str, str]]) -> None:
+        for row in range(self.rowCount()):
+            combo = self.cellWidget(row, COL_FORMAT)
+            if combo is None:
+                continue
+            item = self.item(row, COL_TYPE)
+            if item is None or item.data(Qt.ItemDataRole.UserRole) != layer_id:
+                continue
+            idx = combo.currentIndex()
+            if 0 <= idx < len(formats):
+                driver = formats[idx][1]
+                old = self._format_overrides.get(layer_id, "")
+                if driver != old:
+                    self._format_overrides[layer_id] = driver
+                    self.format_changed.emit(layer_id, driver)
+            break
+
+    def set_format_override(self, layer_id: str, driver: str) -> None:
+        """Set the format override for a layer. Empty string means default (global)."""
+        self._format_overrides[layer_id] = driver
+        for row in range(self.rowCount()):
+            combo = self.cellWidget(row, COL_FORMAT)
+            if combo is None:
+                continue
+            item = self.item(row, COL_TYPE)
+            if item is None or item.data(Qt.ItemDataRole.UserRole) != layer_id:
+                continue
+            layer = QgsProject.instance().mapLayer(layer_id)
+            is_vector = isinstance(layer, QgsVectorLayer)
+            formats = VECTOR_FORMATS if is_vector else RASTER_FORMATS
+            for idx, (_label, d) in enumerate(formats):
+                if d == driver:
+                    combo.blockSignals(True)
+                    combo.setCurrentIndex(idx)
+                    combo.blockSignals(False)
+                    break
+            break
+
+    def get_format_override(self, layer_id: str) -> str:
+        """Return the format override for a layer, or empty string for default."""
+        return self._format_overrides.get(layer_id, "")
 
     def set_filter(self, layer_id: str, expression: str) -> None:
-        """Update the stored filter and refresh the filter badge."""
+        """Set a filter expression badge for a specific layer."""
         self._filters[layer_id] = expression
         for row in range(self.rowCount()):
             if self._layer_id_for_row(row) == layer_id:
                 filt_item = self.item(row, COL_FILTER)
                 if filt_item:
                     has = bool(expression.strip())
-                    filt_item.setText("⚡" if has else "")
-                    if has:
-                        filt_item.setToolTip(f"Filter:\n{expression}")
-                        filt_item.setForeground(QBrush(QColor("#e67e22")))
-                    else:
-                        filt_item.setToolTip("")
-                        filt_item.setForeground(QBrush(QColor("#999999")))
+                    filt_item.setText("\u26a1" if has else "")
+                    filt_item.setToolTip(f"Filter:\n{expression}" if has else "")
+                    filt_item.setForeground(
+                        QBrush(QColor("#e67e22") if has else QColor("#999999"))
+                    )
                 break
 
     def get_filters(self) -> Dict[str, str]:
+        """Return a copy of the current filter dict."""
         return dict(self._filters)
 
     def get_target_crs(self, layer_id: str) -> str:
+        """Return the stored target CRS auth ID for a layer."""
         return self._target_crs.get(layer_id, "")
 
     def set_target_crs(self, layer_id: str, authid: str) -> None:
+        """Update the displayed target CRS for a layer."""
         self._target_crs[layer_id] = authid
         for row in range(self.rowCount()):
             if self._layer_id_for_row(row) == layer_id:
@@ -265,80 +299,42 @@ class LayerTableWidget(QTableWidget):
     def export_warning(self, layer_id: str) -> str:
         return self._export_warnings.get(layer_id, "")
 
-    # ------------------------------------------------------------------ #
-    # Selection helpers                                                   #
-    # ------------------------------------------------------------------ #
-
     def selected_layer_ids(self) -> List[str]:
-        """Return layer IDs of selected rows."""
+        """Return list of selected layer IDs."""
         ids: List[str] = []
         model = self.selectionModel()
         if not model:
             return ids
-
         for index in model.selectedRows():
-            row = index.row()
-            lid = self._layer_id_for_row(row)
+            lid = self._layer_id_for_row(index.row())
             if lid:
                 ids.append(lid)
         return ids
 
-    def checked_layer_ids(self) -> List[str]:
-        """
-        Compatibility wrapper for old code.
-        Now returns selected layer IDs.
-        """
-        return self.selected_layer_ids()
-
     def check_all(self) -> None:
-        """
-        Compatibility wrapper for old code.
-        Now selects all rows.
-        """
         self.selectAll()
         self._emit_selection_changed()
 
     def uncheck_all(self) -> None:
-        """
-        Compatibility wrapper for old code.
-        Now clears selection.
-        """
         self.clearSelection()
         self._emit_selection_changed()
 
-    # ------------------------------------------------------------------ #
-    # Export spec read-out                                                #
-    # ------------------------------------------------------------------ #
-
-    def get_checked_items(self) -> List[Tuple[str, str]]:
-        """
-        Compatibility wrapper for old code.
-
-        Return (layer_id, export_name) for every selected row.
-        Export name comes from the editable col, NEVER the live layer name.
-        """
-        return self.get_selected_items()
-
     def get_selected_items(self) -> List[Tuple[str, str]]:
-        """
-        Return (layer_id, export_name) for every selected row.
-        """
+        """Return (layer_id, export_name) tuples for selected rows."""
         result = []
         model = self.selectionModel()
         if not model:
             return result
-
         for index in sorted(model.selectedRows(), key=lambda x: x.row()):
-            row = index.row()
-            lid = self._layer_id_for_row(row)
-            exp_item = self.item(row, COL_EXPORT)
-            export_name = exp_item.text().strip() if exp_item else ""
-            if lid and export_name:
-                result.append((lid, export_name))
+            lid = self._layer_id_for_row(index.row())
+            exp_item = self.item(index.row(), COL_EXPORT)
+            name = exp_item.text().strip() if exp_item else ""
+            if lid and name:
+                result.append((lid, name))
         return result
 
     def reset_export_names(self) -> None:
-        """Reset all export names to match their source layer names."""
+        """Reset all export names back to source layer names."""
         self.blockSignals(True)
         for row in range(self.rowCount()):
             lid = self._layer_id_for_row(row)
@@ -359,81 +355,65 @@ class LayerTableWidget(QTableWidget):
         return self._export_names.get(layer_id)
 
     def set_active_layer(self, layer: QgsMapLayer) -> None:
-        """
-        Select a specific layer row in the table and scroll to it.
-        """
+        """Select and scroll to a specific layer row."""
         if not layer:
             return
-
         self.clearSelection()
         for row in range(self.rowCount()):
             if self._layer_id_for_row(row) == layer.id():
                 self.selectRow(row)
                 self.scrollToItem(self.item(row, COL_SOURCE))
                 break
-
         self._emit_selection_changed()
 
-    # ------------------------------------------------------------------ #
-    # Signal handlers                                                     #
-    # ------------------------------------------------------------------ #
+    def count_filters(self) -> int:
+        """Return the number of layers with non-empty filter expressions."""
+        return sum(1 for v in self._filters.values() if v.strip())
 
     def _emit_selection_changed(self) -> None:
         self.selection_changed.emit(self.selected_layer_ids())
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         col = item.column()
-
         if col == COL_EXPORT:
             layer_id = item.data(Qt.ItemDataRole.UserRole)
             new_name = item.text().strip()
             if not layer_id:
                 return
-
             self._export_names[layer_id] = new_name
-
             layer = QgsProject.instance().mapLayer(layer_id)
-            src_name = layer.name() if layer else ""
-            self._apply_export_name_style(item, new_name, src_name)
-
+            self._apply_export_name_style(item, new_name, layer.name() if layer else "")
             self.export_name_changed.emit(layer_id, new_name)
         elif col == COL_CRS:
             layer_id = item.data(Qt.ItemDataRole.UserRole)
             if not layer_id:
                 return
-            value = item.text().strip()
-            self._target_crs[layer_id] = value
+            self._target_crs[layer_id] = item.text().strip()
             self._apply_crs_style(item)
 
     def _on_cell_double_clicked(self, row: int, col: int) -> None:
         if col != COL_CRS:
             return
-
         layer_id = self._layer_id_for_row(row)
-        if not layer_id:
-            return
-
-        layer = QgsProject.instance().mapLayer(layer_id)
+        layer = QgsProject.instance().mapLayer(layer_id) if layer_id else None
         if layer is None:
             return
 
         crs_item = self.item(row, COL_CRS)
-        current_authid = crs_item.text().strip() if crs_item else ""
-        if not current_authid and layer.crs().isValid():
-            current_authid = layer.crs().authid()
+        current = crs_item.text().strip() if crs_item else ""
+        if not current and layer.crs().isValid():
+            current = layer.crs().authid()
 
         dlg = QgsProjectionSelectionDialog(self)
-        current_crs = QgsCoordinateReferenceSystem(current_authid)
-        if current_crs.isValid():
-            dlg.setCrs(current_crs)
+        crs = QgsCoordinateReferenceSystem(current)
+        if crs.isValid():
+            dlg.setCrs(crs)
 
         if dlg.exec():
-            selected_crs = dlg.crs()
-            if not selected_crs.isValid():
+            selected = dlg.crs()
+            if not selected.isValid():
                 return
-            authid = selected_crs.authid()
-            if not authid:
-                authid = selected_crs.toOgcWmsCrs()
+            authid = selected.authid() or selected.toOgcWmsCrs()
             self._target_crs[layer_id] = authid
             if crs_item:
                 self.blockSignals(True)
@@ -442,10 +422,6 @@ class LayerTableWidget(QTableWidget):
                 self.blockSignals(False)
             self.crs_changed.emit(layer_id, authid)
 
-    # ------------------------------------------------------------------ #
-    # Internal helpers                                                    #
-    # ------------------------------------------------------------------ #
-
     def _layer_id_for_row(self, row: int) -> Optional[str]:
         item = self.item(row, COL_SOURCE)
         return item.data(Qt.ItemDataRole.UserRole) if item else None
@@ -453,23 +429,24 @@ class LayerTableWidget(QTableWidget):
     def _icon_for_layer(self, layer: QgsMapLayer) -> QIcon:
         if isinstance(layer, QgsVectorLayer):
             icon = QgsApplication.getThemeIcon("/mIconVector.svg")
-            if not icon.isNull():
-                return icon
-            return self.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon)
-
+            return (
+                icon
+                if not icon.isNull()
+                else self.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon)
+            )
         if isinstance(layer, QgsRasterLayer):
             icon = QgsApplication.getThemeIcon("/mIconRaster.svg")
-            if not icon.isNull():
-                return icon
-            return self.style().standardIcon(QStyle.StandardPixmap.SP_DriveHDIcon)
-
-        return self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView)
+            return (
+                icon
+                if not icon.isNull()
+                else self.style().standardIcon(QStyle.StandardPixmap.SP_DriveHDIcon)
+            )
+        return self.style().standardIcon(
+            QStyle.StandardPixmap.SP_FileDialogDetailedView
+        )
 
     def _apply_export_name_style(
-        self,
-        item: QTableWidgetItem,
-        export_name: str,
-        source_name: str,
+        self, item: QTableWidgetItem, export_name: str, source_name: str
     ) -> None:
         f = item.font()
         if export_name != source_name:
@@ -492,7 +469,6 @@ class LayerTableWidget(QTableWidget):
             item.setToolTip("Uses source layer CRS")
             item.setForeground(QBrush(self.palette().color(QPalette.ColorRole.Text)))
             return
-
         crs = QgsCoordinateReferenceSystem(value)
         if crs.isValid():
             item.setToolTip(f"Target CRS: {crs.authid()}")

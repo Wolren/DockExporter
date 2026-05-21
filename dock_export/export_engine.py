@@ -1,24 +1,13 @@
-"""
-export_engine.py  –  Spec-driven export engine.
+"""Core export engine. Iterates ExportSpec objects and dispatches to vector/raster writers."""
 
-Vector:
-  * uses QgsVectorFileWriter.create(...) for both single-file and GPKG
-  * always regenerates PK for GPKG via QgsFeatureSink.RegeneratePrimaryKey
-  * never renames live layers; names only stored in ExportSpec
-
-Raster:
-  * uses pure GDAL.Translate from the layer source
-  * for single-file: converts to GTiff/PNG/etc
-  * for GPKG: uses RASTER_TABLE + APPEND_SUBDATASET=YES
-"""
 from __future__ import annotations
 
 import logging
 import os
-import tempfile
 from typing import List, Optional, Tuple
 
 from qgis.core import (
+    Qgis,
     QgsCoordinateReferenceSystem,
     QgsCoordinateTransform,
     QgsCoordinateTransformContext,
@@ -27,7 +16,6 @@ from qgis.core import (
     QgsFeature,
     QgsFeatureRequest,
     QgsFeatureSink,
-    QgsField,
     QgsFields,
     QgsMapLayer,
     QgsProject,
@@ -37,11 +25,12 @@ from qgis.core import (
     QgsWkbTypes,
 )
 
-from .models import ExportSpec
+from .models import ExportSpec, ExportResult, StyleMode
 from .style_manager import StyleManager
 
 try:
     from osgeo import gdal
+
     GDAL_AVAILABLE = True
 except ImportError:
     GDAL_AVAILABLE = False
@@ -50,7 +39,7 @@ logger = logging.getLogger("DockExport.ExportEngine")
 
 
 def layer_export_block_reason(layer: QgsMapLayer) -> str:
-    """Return a human-readable reason when a layer cannot be exported."""
+    """Return reason string if layer cannot be exported, empty string if OK."""
     if isinstance(layer, QgsRasterLayer):
         provider = (layer.providerType() or "").lower()
         source = (layer.source() or "").lower()
@@ -81,40 +70,21 @@ def layer_export_block_reason(layer: QgsMapLayer) -> str:
     return "This layer type is not supported by the exporter."
 
 
-class ExportResult:
-    def __init__(self, spec: ExportSpec):
-        self.spec = spec
-        self.success: bool = False
-        self.output_path: str = ""
-        self.error: str = ""
-        self.features_written: int = 0
-
-    def __repr__(self):
-        return (f"ExportResult(name={self.spec.export_name!r}, "
-                f"ok={self.success}, err={self.error!r})")
-
-
 class ExportEngine:
-    """Executes a list of ExportSpec objects.
-
-    Vector:
-      * use QgsVectorFileWriter.create
-    Raster:
-      * use GDAL.Translate
-    """
+    """Executes ExportSpec list: vectors via QgsVectorFileWriter, rasters via GDAL."""
 
     def __init__(self, style_manager: Optional[StyleManager] = None):
         self._style = style_manager or StyleManager()
 
     def run(self, specs: List[ExportSpec], progress_cb=None) -> List[ExportResult]:
+        """Execute a list of ExportSpec objects. Returns list of ExportResult."""
         results: List[ExportResult] = []
         total = len(specs)
 
         for i, spec in enumerate(specs):
-            msg = f"Exporting '{spec.export_name}'…"
+            msg = f"Exporting '{spec.export_name}'..."
             if progress_cb:
                 progress_cb(i, total, msg)
-            logger.info(msg)
 
             result = self._export_one(spec)
             results.append(result)
@@ -127,6 +97,7 @@ class ExportEngine:
         return results
 
     def _export_one(self, spec: ExportSpec) -> ExportResult:
+        """Export a single layer from a single ExportSpec."""
         result = ExportResult(spec)
         layer = QgsProject.instance().mapLayer(spec.source_layer_id)
         if layer is None or not layer.isValid():
@@ -142,37 +113,47 @@ class ExportEngine:
             if isinstance(layer, QgsRasterLayer):
                 self._export_raster(layer, spec, result)
             elif isinstance(layer, QgsVectorLayer):
-                if spec.target_mode == "gpkg":
-                    self._export_vector_to_gpkg(layer, spec, result)
-                else:
-                    self._export_vector_single(layer, spec, result)
+                self._export_vector(layer, spec, result)
             else:
                 result.error = "Unsupported layer type"
         except Exception as exc:
             result.error = str(exc)
-            logger.exception("Export failed for %s", spec.export_name)
 
         return result
 
-    # -------------------- VECTOR SINGLE FILE --------------------
-    def _export_vector_single(
+    def _export_vector(
         self,
         layer: QgsVectorLayer,
         spec: ExportSpec,
         result: ExportResult,
     ) -> None:
-        output_path = os.path.join(
-            spec.output_path,
-            f"{spec.export_name}{spec.file_extension}",
-        )
-        os.makedirs(spec.output_path, exist_ok=True)
+        """Write a vector layer to a single file or GPKG table based on target_mode."""
+        is_gpkg_mode = spec.target_mode == "gpkg"
+
+        Action = QgsVectorFileWriter.ActionOnExistingFile
+
+        if is_gpkg_mode:
+            output_path = spec.output_path
+            os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+            action = (
+                Action.CreateOrOverwriteLayer
+                if os.path.exists(output_path)
+                else Action.CreateOrOverwriteFile
+            )
+        else:
+            output_path = os.path.join(
+                spec.output_path,
+                f"{spec.export_name}{spec.file_extension}",
+            )
+            os.makedirs(spec.output_path, exist_ok=True)
+            action = Action.CreateOrOverwriteFile
 
         opts = QgsVectorFileWriter.SaveVectorOptions()
         opts.driverName = spec.driver
         opts.fileEncoding = "UTF-8"
         opts.layerName = spec.export_name
-        opts.actionOnExistingFile = QgsVectorFileWriter.CreateOrOverwriteFile
-        opts.symbologyExport = QgsVectorFileWriter.NoSymbology
+        opts.actionOnExistingFile = action
+        opts.symbologyExport = Qgis.FeatureSymbologyExport.NoSymbology
 
         transform_ctx = QgsProject.instance().transformContext()
 
@@ -181,11 +162,8 @@ class ExportEngine:
             return
 
         use_safe_clone = (
-            bool(spec.filter_expression.strip())
-            or spec.driver == "GPKG"
-            or target_crs != layer.crs()
+            bool(spec.filter_expression.strip()) or target_crs != layer.crs()
         )
-        source = layer
 
         if use_safe_clone:
             source, n_feats, clone_error = self._make_filtered_clone(
@@ -198,153 +176,87 @@ class ExportEngine:
                 result.error = clone_error or "Could not build filtered/safe clone"
                 return
             result.features_written = n_feats
+            write_source = source
         else:
+            write_source = layer
             result.features_written = layer.featureCount()
 
-        sink_flags = QgsFeatureSink.SinkFlags()
-        if spec.driver == "GPKG":
-            sink_flags |= QgsFeatureSink.RegeneratePrimaryKey
-
-        new_filename = ""
-        new_layer = ""
+            if spec.driver == "GPKG" or is_gpkg_mode:
+                fid_idx = None
+                for i in range(layer.fields().count()):
+                    if layer.fields()[i].name().lower() == "fid":
+                        fid_idx = i
+                        break
+                if fid_idx is not None:
+                    opts.attributes = [
+                        i for i in range(layer.fields().count()) if i != fid_idx
+                    ]
 
         writer = QgsVectorFileWriter.create(
             output_path,
-            source.fields(),
-            source.wkbType(),
-            source.crs(),
+            write_source.fields(),
+            write_source.wkbType(),
+            write_source.crs(),
             transform_ctx,
             opts,
-            sink_flags,
-            new_filename,
-            new_layer,
+            QgsFeatureSink.SinkFlags(QgsFeatureSink.SinkFlag.RegeneratePrimaryKey)
+            if spec.driver == "GPKG" or is_gpkg_mode
+            else QgsFeatureSink.SinkFlags(),
+            "",
+            "",
         )
 
         if writer is None:
             result.error = "QgsVectorFileWriter.create() returned None"
             return
 
-        if writer.hasError() != QgsVectorFileWriter.NoError:
+        if writer.hasError() != QgsVectorFileWriter.WriterError.NoError:
             result.error = writer.errorMessage()
             del writer
             return
 
-        for feat in source.getFeatures():
-            new_feat = QgsFeature(feat)
-            if spec.driver == "GPKG":
-                new_feat.setId(-1)
-            ok = writer.addFeature(new_feat, QgsFeatureSink.FastInsert)
-            if not ok:
-                result.error = writer.errorMessage() or "Failed while adding features"
-                del writer
-                return
+        needs_reset_id = spec.driver == "GPKG" or is_gpkg_mode
+        features = list(write_source.getFeatures())
+        if needs_reset_id:
+            for f in features:
+                f.setId(-1)
+
+        ok = writer.addFeatures(features)
+        if not ok:
+            result.error = writer.errorMessage() or "Failed while adding features"
+            del writer
+            return
 
         del writer
 
         result.success = True
         result.output_path = output_path
 
-        if spec.style_mode not in ("none", "embed"):
-            self._style.apply_style_mode(layer, spec.style_mode, output_path)
-        elif spec.style_mode == "embed" and spec.driver == "GPKG":
-            self._style.apply_style_mode(
-                layer, "embed", output_path, spec.export_name
-            )
-
-    # -------------------- VECTOR → GPKG --------------------
-    def _export_vector_to_gpkg(
-        self,
-        layer: QgsVectorLayer,
-        spec: ExportSpec,
-        result: ExportResult,
-    ) -> None:
-        gpkg_path = spec.output_path
-        os.makedirs(os.path.dirname(gpkg_path) or ".", exist_ok=True)
-
-        opts = QgsVectorFileWriter.SaveVectorOptions()
-        opts.driverName = "GPKG"
-        opts.fileEncoding = "UTF-8"
-        opts.layerName = spec.export_name
-
-        if os.path.exists(gpkg_path):
-            opts.actionOnExistingFile = QgsVectorFileWriter.CreateOrOverwriteLayer
+        if is_gpkg_mode:
+            if spec.style_mode != StyleMode.NONE:
+                self._style.apply_style_mode(
+                    layer,
+                    StyleMode.EMBED
+                    if spec.style_mode == StyleMode.EMBED
+                    else spec.style_mode,
+                    output_path,
+                    spec.export_name,
+                )
         else:
-            opts.actionOnExistingFile = QgsVectorFileWriter.CreateOrOverwriteFile
+            if spec.style_mode not in (StyleMode.NONE, StyleMode.EMBED):
+                self._style.apply_style_mode(layer, spec.style_mode, output_path)
+            elif spec.style_mode == StyleMode.EMBED and spec.driver == "GPKG":
+                self._style.apply_style_mode(
+                    layer, StyleMode.EMBED, output_path, spec.export_name
+                )
 
-        transform_ctx = QgsProject.instance().transformContext()
-
-        target_crs = self._resolve_target_crs(layer, spec, result)
-        if target_crs is None:
-            return
-
-        source, n_feats, clone_error = self._make_filtered_clone(
-            layer,
-            spec.filter_expression if spec.filter_expression.strip() else "",
-            "GPKG",
-            target_crs.authid(),
-        )
-        if source is None:
-            result.error = clone_error or "Could not build filtered/safe clone"
-            return
-        result.features_written = n_feats
-
-        sink_flags = QgsFeatureSink.SinkFlags()
-        sink_flags |= QgsFeatureSink.RegeneratePrimaryKey
-
-        new_filename = ""
-        new_layer = ""
-
-        writer = QgsVectorFileWriter.create(
-            gpkg_path,
-            source.fields(),
-            source.wkbType(),
-            source.crs(),
-            transform_ctx,
-            opts,
-            sink_flags,
-            new_filename,
-            new_layer,
-        )
-
-        if writer is None:
-            result.error = "QgsVectorFileWriter.create() returned None"
-            return
-
-        if writer.hasError() != QgsVectorFileWriter.NoError:
-            result.error = writer.errorMessage()
-            del writer
-            return
-
-        for feat in source.getFeatures():
-            new_feat = QgsFeature(feat)
-            new_feat.setId(-1)
-            ok = writer.addFeature(new_feat, QgsFeatureSink.FastInsert)
-            if not ok:
-                result.error = writer.errorMessage() or "Failed while adding features"
-                del writer
-                return
-
-        del writer
-
-        result.success = True
-        result.output_path = gpkg_path
-
-        if spec.style_mode not in ("none",):
-            embed = spec.style_mode == "embed"
-            self._style.apply_style_mode(
-                layer,
-                "embed" if embed else spec.style_mode,
-                gpkg_path,
-                spec.export_name,
-            )
-
-    # -------------------- RASTER (GDAL) --------------------
     def _export_raster(
         self,
         layer: QgsRasterLayer,
         spec: ExportSpec,
         result: ExportResult,
     ) -> None:
+        """Dispatch raster export based on target_mode."""
         transform_ctx = QgsProject.instance().transformContext()
         if spec.target_mode == "gpkg":
             self._export_raster_to_gpkg(layer, spec, result, transform_ctx)
@@ -358,6 +270,7 @@ class ExportEngine:
         result: ExportResult,
         transform_ctx: QgsCoordinateTransformContext,
     ) -> None:
+        """Export raster to GeoTIFF via GDAL Translate."""
         if not GDAL_AVAILABLE:
             result.error = "GDAL is required for raster export"
             return
@@ -373,7 +286,9 @@ class ExportEngine:
             result.error = "Raster layer has no source path"
             return
 
-        if src_path.lower().startswith(("context:", "wms:", "xyz:", "wmts:", "http://", "https://")):
+        if src_path.lower().startswith(
+            ("context:", "wms:", "xyz:", "wmts:", "http://", "https://")
+        ):
             result.error = "Non-file raster providers are not supported yet"
             return
 
@@ -388,17 +303,13 @@ class ExportEngine:
             translate_kwargs = {"format": driver_name}
             if spec.target_crs_authid.strip():
                 translate_kwargs["outputSRS"] = spec.target_crs_authid.strip()
-            gdal.Translate(
-                output_path,
-                src_ds,
-                **translate_kwargs,
-            )
+            gdal.Translate(output_path, src_ds, **translate_kwargs)
             src_ds = None
 
             result.success = True
             result.output_path = output_path
 
-            if spec.style_mode in ("qml", "both"):
+            if spec.style_mode in (StyleMode.QML, StyleMode.BOTH):
                 self._style.save_qml(layer, os.path.splitext(output_path)[0])
 
         except Exception as exc:
@@ -411,6 +322,7 @@ class ExportEngine:
         result: ExportResult,
         transform_ctx: QgsCoordinateTransformContext,
     ) -> None:
+        """Embed raster into a GeoPackage via GDAL Translate with RASTER_TABLE."""
         if not GDAL_AVAILABLE:
             result.error = "GDAL is required for raster export to GeoPackage"
             return
@@ -423,7 +335,9 @@ class ExportEngine:
             result.error = "Raster layer has no source path"
             return
 
-        if src_path.lower().startswith(("context:", "wms:", "xyz:", "wmts:", "http://", "https://")):
+        if src_path.lower().startswith(
+            ("context:", "wms:", "xyz:", "wmts:", "http://", "https://")
+        ):
             result.error = "Non-file raster providers are not supported yet"
             return
 
@@ -438,7 +352,6 @@ class ExportEngine:
                 f"RASTER_TABLE={spec.export_name}",
                 "APPEND_SUBDATASET=YES",
             ]
-
             translate_kwargs = {
                 "format": "GPKG",
                 "creationOptions": creation_opts,
@@ -446,11 +359,7 @@ class ExportEngine:
             if spec.target_crs_authid.strip():
                 translate_kwargs["outputSRS"] = spec.target_crs_authid.strip()
 
-            gdal.Translate(
-                gpkg_path,
-                src_ds,
-                **translate_kwargs,
-            )
+            gdal.Translate(gpkg_path, src_ds, **translate_kwargs)
             src_ds = None
 
             result.success = True
@@ -459,7 +368,6 @@ class ExportEngine:
         except Exception as exc:
             result.error = f"GDAL GPKG translate error: {exc}"
 
-    # -------------------- FILTERED CLONE --------------------
     @staticmethod
     def _make_filtered_clone(
         layer: QgsVectorLayer,
@@ -467,6 +375,11 @@ class ExportEngine:
         driver_name: str = "",
         target_crs_authid: str = "",
     ) -> Tuple[Optional[QgsVectorLayer], int, str]:
+        """Create in-memory clone with filter expression and optional CRS reprojection.
+
+        Drops 'fid' field for GPKG driver. Never sets subset string on source.
+        Returns (memory_layer, feature_count, error_message).
+        """
         drop_fid = driver_name.upper() == "GPKG"
 
         source_fields = layer.fields()
@@ -487,11 +400,9 @@ class ExportEngine:
             target_crs = requested
 
         geom_type = QgsWkbTypes.displayString(layer.wkbType())
-        crs_str = target_crs.authid()
-        uri = f"{geom_type}?crs={crs_str}"
+        uri = f"{geom_type}?crs={target_crs.authid()}"
         mem = QgsVectorLayer(uri, "filtered_clone", "memory")
         if not mem.isValid():
-            logger.error("Could not create memory clone layer")
             return None, 0, "Could not create memory clone layer"
 
         dp = mem.dataProvider()
@@ -501,10 +412,8 @@ class ExportEngine:
         if expression.strip():
             expr = QgsExpression(expression)
             if expr.hasParserError():
-                logger.error("Filter expression parser error: %s", expr.parserErrorString())
                 return None, 0, expr.parserErrorString()
-            request = QgsFeatureRequest(expr)
-            iterator = layer.getFeatures(request)
+            iterator = layer.getFeatures(QgsFeatureRequest(expr))
         else:
             iterator = layer.getFeatures()
 
@@ -521,8 +430,7 @@ class ExportEngine:
             feat = QgsFeature(mem.fields())
             geom = src_feat.geometry()
             if transform is not None and geom is not None and not geom.isNull():
-                transform_result = geom.transform(transform)
-                if transform_result != 0:
+                if geom.transform(transform) != 0:
                     return None, 0, "Geometry transformation failed"
             feat.setGeometry(geom)
             feat.setAttributes([src_feat[i] for i in kept_indexes])
@@ -531,15 +439,9 @@ class ExportEngine:
 
         ok, _ = dp.addFeatures(new_features)
         if not ok:
-            logger.error("Failed to add filtered features to memory layer")
             return None, 0, "Failed to add features to memory layer"
 
         mem.updateExtents()
-        logger.info(
-            "Filtered clone: %d / %d features kept",
-            len(new_features),
-            layer.featureCount(),
-        )
         return mem, len(new_features), ""
 
     @staticmethod
@@ -548,6 +450,7 @@ class ExportEngine:
         spec: ExportSpec,
         result: ExportResult,
     ) -> Optional[QgsCoordinateReferenceSystem]:
+        """Return target CRS from spec or fall back to source layer CRS."""
         target = spec.target_crs_authid.strip()
         if not target:
             return layer.crs()
@@ -557,21 +460,16 @@ class ExportEngine:
             return None
         return crs
 
-    # -------------------- REPLACE PROJECT SOURCE --------------------
     @staticmethod
-    def _replace_project_source(
-        spec: ExportSpec,
-        result: ExportResult,
-    ) -> None:
+    def _replace_project_source(spec: ExportSpec, result: ExportResult) -> None:
+        """Repoint project layer to the newly written export file."""
         layer = QgsProject.instance().mapLayer(spec.source_layer_id)
         if layer is None:
             return
 
         try:
             provider_opts = QgsDataProvider.ProviderOptions()
-            provider_opts.transformContext = (
-                QgsProject.instance().transformContext()
-            )
+            provider_opts.transformContext = QgsProject.instance().transformContext()
 
             if spec.target_mode == "gpkg":
                 new_uri = f"{result.output_path}|layername={spec.export_name}"
@@ -579,11 +477,7 @@ class ExportEngine:
                 new_uri = result.output_path
 
             layer.setDataSource(new_uri, layer.name(), "ogr", provider_opts)
-            logger.info(
-                "Replaced data source for '%s' → %s", layer.name(), new_uri
-            )
         except Exception as exc:
             logger.warning(
-                "Could not replace data source for '%s': %s",
-                layer.name(), exc,
+                "Could not replace data source for '%s': %s", layer.name(), exc
             )

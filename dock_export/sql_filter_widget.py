@@ -1,14 +1,7 @@
-"""
-sql_filter_widget.py  –  Expression filter dialog.
+"""Per-layer QGIS expression filter dialog with field list and function browser."""
 
-Redesigned from the original:
-  * Accepts a list of (layer_id, export_name) tuples rather than live
-    layer tuples to avoid mutating the layer.
-  * Validates via QgsExpression (no GeoPandas).
-  * Emits filter_applied(layer_id, expression_string).
-  * Qt5 / Qt6 compatible via qgis.PyQt.
-"""
 from __future__ import annotations
+
 from typing import Dict, List, Tuple, Optional
 
 from qgis.PyQt.QtCore import Qt, pyqtSignal
@@ -29,7 +22,6 @@ from qgis.PyQt.QtWidgets import (
     QWidget,
     QComboBox,
 )
-
 from qgis.core import (
     QgsExpression,
     QgsFeatureRequest,
@@ -39,28 +31,26 @@ from qgis.core import (
 
 
 class SQLFilterDialog(QDialog):
-    """
-    Per-layer QGIS expression filter editor.
+    """Per-layer QGIS expression filter editor.
 
     Signals
     -------
     filter_applied(layer_id: str, expression: str)
-        Emitted when the user clicks "Apply Filter".
     """
 
     filter_applied = pyqtSignal(str, str)
 
     def __init__(
-        self,
-        layer_items: Optional[List[Tuple[str, str]]] = None,
-        current_filters: Optional[Dict[str, str]] = None,
-        parent=None,
+            self,
+            layer_items: Optional[List[Tuple[str, str]]] = None,
+            current_filters: Optional[Dict[str, str]] = None,
+            parent=None,
     ):
         """
         Parameters
         ----------
         layer_items : list of (layer_id, export_name)
-            Only vector layers should be included.
+            Vector layers only.
         current_filters : dict {layer_id: expression_string}
         """
         super().__init__(parent)
@@ -77,23 +67,17 @@ class SQLFilterDialog(QDialog):
         self._populate_layer_combo()
         self._populate_expression_tree()
 
-    # ------------------------------------------------------------------ #
-    # UI build                                                             #
-    # ------------------------------------------------------------------ #
-
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
 
-        # Title
-        title = QLabel("Feature Filter – QGIS Expression")
+        title = QLabel("Feature Filter - QGIS Expression")
         f = QFont()
         f.setPointSize(11)
         f.setBold(True)
         title.setFont(f)
         layout.addWidget(title)
 
-        # Layer selector row
         layer_row = QHBoxLayout()
         layer_row.addWidget(QLabel("Layer:"))
         self._layer_combo = QComboBox()
@@ -105,17 +89,16 @@ class SQLFilterDialog(QDialog):
         layer_row.addStretch()
         layout.addLayout(layer_row)
 
-        # Expression editor
         editor_label = QLabel("Expression (WHERE clause):")
         editor_label.setStyleSheet("font-weight:bold; font-size:10pt;")
         layout.addWidget(editor_label)
 
         self._editor = QPlainTextEdit()
         self._editor.setPlaceholderText(
-            'Examples:\n'
-            '"type" = \'school\'\n'
+            "Examples:\n"
+            "\"type\" = 'school'\n"
             '"population" > 5000 AND "population" < 50000\n'
-            '"name" LIKE \'%Park%\'\n'
+            "\"name\" LIKE '%Park%'\n"
             'LENGTH("description") > 0'
         )
         mono = QFont("Courier New" if Qt is not None else "monospace")
@@ -124,10 +107,8 @@ class SQLFilterDialog(QDialog):
         self._editor.setMinimumHeight(110)
         layout.addWidget(self._editor)
 
-        # Splitter: Fields | Functions
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # Left: field list
         fields_w = QWidget()
         fl = QVBoxLayout(fields_w)
         fl.setContentsMargins(0, 0, 0, 0)
@@ -137,13 +118,12 @@ class SQLFilterDialog(QDialog):
         fl.addWidget(self._field_list)
         splitter.addWidget(fields_w)
 
-        # Right: expression tree
         expr_w = QWidget()
         el = QVBoxLayout(expr_w)
         el.setContentsMargins(0, 0, 0, 0)
         self._expr_search = QComboBox()
         self._expr_search.setEditable(True)
-        self._expr_search.setPlaceholderText("Search functions…")
+        self._expr_search.setPlaceholderText("Search functions...")
         self._expr_search.currentTextChanged.connect(self._filter_tree)
         el.addWidget(self._expr_search)
         self._expr_tree = QTreeWidget()
@@ -155,7 +135,6 @@ class SQLFilterDialog(QDialog):
         splitter.setSizes([400, 420])
         layout.addWidget(splitter)
 
-        # Validate button + result label
         val_row = QHBoxLayout()
         self._validate_btn = QPushButton("Validate")
         self._validate_btn.setMaximumWidth(200)
@@ -172,7 +151,6 @@ class SQLFilterDialog(QDialog):
         )
         layout.addWidget(self._result_label)
 
-        # Dialog buttons
         btn_row = QHBoxLayout()
         btn_row.addStretch()
 
@@ -192,10 +170,6 @@ class SQLFilterDialog(QDialog):
         btn_row.addWidget(apply_btn)
 
         layout.addLayout(btn_row)
-
-    # ------------------------------------------------------------------ #
-    # Layer combo                                                          #
-    # ------------------------------------------------------------------ #
 
     def _populate_layer_combo(self) -> None:
         prev_id = self._layer_combo.currentData()
@@ -222,7 +196,6 @@ class SQLFilterDialog(QDialog):
             self._on_layer_changed(restore_idx)
 
     def update_layer_items(self, layer_items: List[Tuple[str, str]]) -> None:
-        """Refresh the layer list (called from parent widget)."""
         self._layer_items = layer_items
         self._populate_layer_combo()
 
@@ -244,16 +217,12 @@ class SQLFilterDialog(QDialog):
             self._editor.setPlainText(expr)
         self._result_label.setText("")
 
-    # ------------------------------------------------------------------ #
-    # Field list                                                           #
-    # ------------------------------------------------------------------ #
-
     def _populate_fields(self) -> None:
         self._field_list.clear()
         if not self._current_layer:
             return
         for field in self._current_layer.fields():
-            item = QListWidgetItem(f'{field.name()}  ({field.typeName()})')
+            item = QListWidgetItem(f"{field.name()}  ({field.typeName()})")
             item.setData(Qt.ItemDataRole.UserRole, field.name())
             self._field_list.addItem(item)
 
@@ -264,24 +233,28 @@ class SQLFilterDialog(QDialog):
         self._editor.setTextCursor(cursor)
         self._editor.setFocus()
 
-    # ------------------------------------------------------------------ #
-    # Expression tree                                                      #
-    # ------------------------------------------------------------------ #
-
     _CATEGORIES = {
         "Operators": [
-            ("=", "Equal"), ("!=", "Not equal"),
-            ("<", "Less than"), (">", "Greater than"),
-            ("<=", "Less or equal"), (">=", "Greater or equal"),
-            ("AND", "Logical AND"), ("OR", "Logical OR"),
-            ("NOT", "Logical NOT"), ("LIKE", "Pattern match"),
+            ("=", "Equal"),
+            ("!=", "Not equal"),
+            ("<", "Less than"),
+            (">", "Greater than"),
+            ("<=", "Less or equal"),
+            (">=", "Greater or equal"),
+            ("AND", "Logical AND"),
+            ("OR", "Logical OR"),
+            ("NOT", "Logical NOT"),
+            ("LIKE", "Pattern match"),
             ("ILIKE", "Case-insensitive LIKE"),
-            ("IS NULL", "Null check"), ("IS NOT NULL", "Non-null check"),
+            ("IS NULL", "Null check"),
+            ("IS NOT NULL", "Non-null check"),
             ("IN (...)", "Value in list"),
         ],
         "String": [
-            ("upper( )", "Uppercase"), ("lower( )", "Lowercase"),
-            ("title( )", "Title case"), ("length( )", "String length"),
+            ("upper( )", "Uppercase"),
+            ("lower( )", "Lowercase"),
+            ("title( )", "Title case"),
+            ("length( )", "String length"),
             ("trim( )", "Trim whitespace"),
             ("substr( string, start, len )", "Substring"),
             ("concat( val1, val2 )", "Concatenate"),
@@ -290,15 +263,22 @@ class SQLFilterDialog(QDialog):
             ("like( string, pattern )", "LIKE"),
         ],
         "Math": [
-            ("abs( val )", "Absolute value"), ("round( val, dp )", "Round"),
-            ("floor( val )", "Floor"), ("ceil( val )", "Ceiling"),
-            ("sqrt( val )", "Square root"), ("pi( )", "π"),
-            ("log( val )", "Natural log"), ("log10( val )", "Log base 10"),
+            ("abs( val )", "Absolute value"),
+            ("round( val, dp )", "Round"),
+            ("floor( val )", "Floor"),
+            ("ceil( val )", "Ceiling"),
+            ("sqrt( val )", "Square root"),
+            ("pi( )", "π"),
+            ("log( val )", "Natural log"),
+            ("log10( val )", "Log base 10"),
         ],
         "Date / Time": [
-            ("now( )", "Current datetime"), ("today( )", "Today's date"),
-            ("year( date )", "Year"), ("month( date )", "Month"),
-            ("day( date )", "Day"), ("hour( datetime )", "Hour"),
+            ("now( )", "Current datetime"),
+            ("today( )", "Today's date"),
+            ("year( date )", "Year"),
+            ("month( date )", "Month"),
+            ("day( date )", "Day"),
+            ("hour( datetime )", "Hour"),
             ("minute( datetime )", "Minute"),
             ("age( date1, date2 )", "Difference"),
         ],
@@ -309,9 +289,11 @@ class SQLFilterDialog(QDialog):
             ("nullif( v1, v2 )", "Null if equal"),
         ],
         "Geometry": [
-            ("$area", "Feature area"), ("$length", "Feature length"),
+            ("$area", "Feature area"),
+            ("$length", "Feature length"),
             ("$perimeter", "Perimeter"),
-            ("$x", "X centroid"), ("$y", "Y centroid"),
+            ("$x", "X centroid"),
+            ("$y", "Y centroid"),
             ("area( geom )", "Area of geometry"),
             ("length( geom )", "Length of geometry"),
             ("perimeter( geom )", "Perimeter of geometry"),
@@ -366,9 +348,20 @@ class SQLFilterDialog(QDialog):
         token = item.data(0, Qt.ItemDataRole.UserRole) or item.text(0)
         cursor = self._editor.textCursor()
         operators = {
-            "=", "!=", "<", ">", "<=", ">=",
-            "AND", "OR", "NOT", "LIKE", "ILIKE", "IN (...)",
-            "IS NULL", "IS NOT NULL",
+            "=",
+            "!=",
+            "<",
+            ">",
+            "<=",
+            ">=",
+            "AND",
+            "OR",
+            "NOT",
+            "LIKE",
+            "ILIKE",
+            "IN (...)",
+            "IS NULL",
+            "IS NOT NULL",
         }
         if token.strip() in operators:
             cursor.insertText(f" {token.strip()} ")
@@ -377,10 +370,6 @@ class SQLFilterDialog(QDialog):
         self._editor.setTextCursor(cursor)
         self._editor.setFocus()
 
-    # ------------------------------------------------------------------ #
-    # Validate                                                             #
-    # ------------------------------------------------------------------ #
-
     def _validate(self) -> None:
         if not self._current_layer:
             self._set_result("No layer selected.", "error")
@@ -388,14 +377,14 @@ class SQLFilterDialog(QDialog):
 
         expr_text = self._editor.toPlainText().strip()
         if not expr_text:
-            self._set_result("Empty expression – all features will be exported.", "info")
+            self._set_result(
+                "Empty expression – all features will be exported.", "info"
+            )
             return
 
         expr = QgsExpression(expr_text)
         if expr.hasParserError():
-            self._set_result(
-                f"❌ Syntax error: {expr.parserErrorString()}", "error"
-            )
+            self._set_result(f"Syntax error: {expr.parserErrorString()}", "error")
             return
 
         req = QgsFeatureRequest(expr)
@@ -403,7 +392,7 @@ class SQLFilterDialog(QDialog):
         total = self._current_layer.featureCount()
         pct = (100.0 * matched / total) if total > 0 else 0.0
         self._set_result(
-            f"✓ Valid – {matched} of {total} features match ({pct:.1f}%)", "ok"
+            f"Valid - {matched} of {total} features match ({pct:.1f}%)", "ok"
         )
 
     def _set_result(self, msg: str, kind: str) -> None:
@@ -418,10 +407,6 @@ class SQLFilterDialog(QDialog):
             f"color:white; font-size:9pt; padding:6px; "
             f"border-radius:3px; background:{bg};"
         )
-
-    # ------------------------------------------------------------------ #
-    # Actions                                                              #
-    # ------------------------------------------------------------------ #
 
     def _clear(self) -> None:
         self._editor.clear()
@@ -438,8 +423,9 @@ class SQLFilterDialog(QDialog):
             expr = QgsExpression(expr_text)
             if expr.hasParserError():
                 QMessageBox.warning(
-                    self, "Invalid Expression",
-                    f"Expression has errors:\n{expr.parserErrorString()}"
+                    self,
+                    "Invalid Expression",
+                    f"Expression has errors:\n{expr.parserErrorString()}",
                 )
                 return
 
@@ -447,10 +433,6 @@ class SQLFilterDialog(QDialog):
         self.current_filters[layer_id] = expr_text
         self.filter_applied.emit(layer_id, expr_text)
         self.accept()
-
-    # ------------------------------------------------------------------ #
-    # Public getter                                                        #
-    # ------------------------------------------------------------------ #
 
     def get_all_filters(self) -> Dict[str, str]:
         """Return a copy of the full filter dict."""
