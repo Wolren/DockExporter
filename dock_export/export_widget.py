@@ -184,30 +184,31 @@ class ExportWidget(QWidget):
         self._status.setStyleSheet("font-size:9pt; color:#555;")
         root.addWidget(self._status)
 
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
+        self._btn_widget = QWidget()
+        self._btn_row = QHBoxLayout(self._btn_widget)
+        self._btn_row.addStretch()
 
         self._reset_names_btn = QPushButton("Reset Names")
         self._reset_names_btn.setToolTip("Reset export names to source layer names")
         self._reset_names_btn.clicked.connect(self._reset_export_names)
-        btn_row.addWidget(self._reset_names_btn)
+        self._btn_row.addWidget(self._reset_names_btn)
 
         self._filter_btn = QPushButton("Set Filters")
         self._filter_btn.setToolTip("Set per-layer QGIS expression filters")
         self._filter_btn.clicked.connect(self._open_filter_dialog)
-        btn_row.addWidget(self._filter_btn)
+        self._btn_row.addWidget(self._filter_btn)
 
         self._reset_all_btn = QPushButton("Reset All")
         self._reset_all_btn.setToolTip(
             "Reset names, filters, CRS, format overrides, and settings"
         )
         self._reset_all_btn.clicked.connect(self._reset_all)
-        btn_row.addWidget(self._reset_all_btn)
+        self._btn_row.addWidget(self._reset_all_btn)
 
         self._export_btn = QPushButton("Export")
         self._export_btn.setStyleSheet("font-weight:bold; padding:5px 18px;")
         self._export_btn.clicked.connect(self._do_export)
-        btn_row.addWidget(self._export_btn)
+        self._btn_row.addWidget(self._export_btn)
 
         self._cancel_btn = QPushButton("Cancel")
         self._cancel_btn.setVisible(False)
@@ -215,9 +216,9 @@ class ExportWidget(QWidget):
             "background:#c0392b; color:white; font-weight:bold; padding:5px 18px;"
         )
         self._cancel_btn.clicked.connect(self._cancel_export)
-        btn_row.addWidget(self._cancel_btn)
+        self._btn_row.addWidget(self._cancel_btn)
 
-        root.addLayout(btn_row)
+        root.addWidget(self._btn_widget)
 
     def _build_log_tab(self) -> QWidget:
         tab = QWidget()
@@ -571,9 +572,10 @@ class ExportWidget(QWidget):
 
         self._export_btn.setEnabled(can_export)
 
-    def _on_tab_changed(self, _index: int) -> None:
+    def _on_tab_changed(self, index: int) -> None:
         self._update_layer_count()
         self._update_export_button_state()
+        self._btn_widget.setVisible(index < 2)
 
     def _load_settings(self) -> None:
         s = QgsSettings()

@@ -714,6 +714,11 @@ def parse_args() -> argparse.Namespace:
         help="Which compression mode to test (default: all)",
     )
     parser.add_argument(
+        "--no-v1",
+        action="store_true",
+        help="Skip v1 (zlib) modes — avoids freeze on large real_data",
+    )
+    parser.add_argument(
         "--iterations",
         type=int,
         default=3,
@@ -777,7 +782,7 @@ def main() -> None:
             args.scenario = "colossal"
 
     if args.real_data:
-        real_dir = os.path.join(os.path.dirname(__file__), "real_data", "3.12.2025")
+        real_dir = os.path.join(os.path.dirname(__file__), "real_data")
         if real_data_available(real_dir):
             real_entries = load_real_data_entries(real_dir)
             if real_entries:
@@ -825,6 +830,11 @@ def main() -> None:
         all_modes = [m for m in all_modes if m[0] == "zip"]
     elif args.mode == "rar":
         all_modes = [m for m in all_modes if m[0] == "rar"]
+
+    if args.no_v1:
+        all_modes = [
+            m for m in all_modes if m[0] != "v1" and not (m[0] == "zip" and m[1])
+        ]
 
     if not all_modes:
         print("No matching modes found.")

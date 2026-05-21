@@ -44,7 +44,6 @@ from qgis.core import (
 
 from .export_engine import ExportEngine, layer_export_block_reason
 from .woof_format import pack_woof_from_directory
-from .woof_storage import open_woof_project
 
 logger = logging.getLogger("DockExport.ProjectExport")
 
@@ -190,10 +189,6 @@ class ProjectExportTab(QWidget):
         layout.addWidget(self._progress)
 
         btn_row = QHBoxLayout()
-        self._open_woof_btn = QPushButton("Open .woof")
-        self._open_woof_btn.setToolTip("Open a .woof archive as a QGIS project")
-        self._open_woof_btn.clicked.connect(self._on_open_woof)
-        btn_row.addWidget(self._open_woof_btn)
         btn_row.addStretch()
         self._export_btn = QPushButton("Export Project")
         self._export_btn.setStyleSheet("font-weight:bold; padding:5px 18px;")
@@ -300,25 +295,6 @@ class ProjectExportTab(QWidget):
             if remote:
                 parts.append(f"{remote} remote (will be downloaded)")
             self._info_label.setText(", ".join(parts))
-
-    # ── Open .woof ──────────────────────────────────────────────────
-
-    def _on_open_woof(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Open .woof Project",
-            "",
-            "Woof archive (*.woof);;All Files (*)",
-        )
-        if not path:
-            return
-        if not open_woof_project(path):
-            QMessageBox.warning(
-                self,
-                "Open Woof",
-                f"Could not open {os.path.basename(path)}.\n"
-                "Make sure it is a valid .woof archive.",
-            )
 
     # ── Export dispatch ─────────────────────────────────────────────
 

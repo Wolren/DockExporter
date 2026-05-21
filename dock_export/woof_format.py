@@ -71,6 +71,7 @@ FLAG_ENTRY_CHUNKED = 1
 FLAG_ENTRY_ZSTD = 2
 
 WOOF_XOR_KEY = 0xA5
+_XOR_TABLE = bytes([i ^ WOOF_XOR_KEY for i in range(256)])
 HEADER_SIZE = 32
 HASH_SIZE = 16 if _HASH_AVAILABLE else 32
 
@@ -200,6 +201,7 @@ class _ChunkStore:
         self._chunks: Dict[bytes, bytes] = {}
         self._raw_sizes: Dict[bytes, int] = {}
         self._order: List[bytes] = []
+        self._dctx = _zstd.ZstdDecompressor()
 
     def add(self, chunk: bytes, level: int = 3) -> bytes:
         h = _hash_chunk(chunk)
@@ -222,8 +224,7 @@ class _ChunkStore:
         return h
 
     def get(self, h: bytes) -> bytes:
-        dctx = _zstd.ZstdDecompressor()
-        return dctx.decompress(self._chunks[h])
+        return self._dctx.decompress(self._chunks[h])
 
     def get_raw_size(self, h: bytes) -> int:
         return self._raw_sizes.get(h, 0)
@@ -269,7 +270,7 @@ class _ChunkStore:
 
 
 def _xor(data: bytes) -> bytes:
-    return bytes(b ^ WOOF_XOR_KEY for b in data)
+    return data.translate(_XOR_TABLE)
 
 
 def _is_compressible(arcname: str) -> bool:
@@ -288,7 +289,7 @@ def _pack_v2(
     """Build a v2 .woof byte array with zstd + CDC chunk dedup."""
     store = _ChunkStore()
     ftable = bytearray()
-    cctx = _zstd.ZstdCompressor(level=level, threads=-1) if compress else None
+    cctx = _zstd.ZstdCompressor(level=level) if compress else None
 
     for name in sorted(entries.keys()):
         content = entries[name]
@@ -333,7 +334,6 @@ def _pack_v2(
 
     has_chunks = len(store._order) > 0
     chunk_bytes = store.serialize() if has_chunks else b""
-    payload = chunk_bytes + bytes(ftable)
 
     total_raw = sum(len(c) for c in entries.values())
     flags = 0
@@ -344,10 +344,11 @@ def _pack_v2(
         WOOF_MAGIC,
         WOOF_VERSION_V2,
         flags,
-        len(payload),
+        len(chunk_bytes) + len(ftable),
         total_raw,
     )
-    return header + payload
+    ftable[0:0] = header + chunk_bytes
+    return bytes(ftable)
 
 
 # ── v2 unpacking ────────────────────────────────────────────────
