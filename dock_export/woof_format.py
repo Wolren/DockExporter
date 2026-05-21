@@ -2,13 +2,12 @@
 Custom binary format for .woof archives, optimised for GIS data.
 
 v1 (legacy): per-entry zlib, simple flat entries
-v2 (current): zstd compression + content-defined chunking with SHA-256 dedup
+v2 (current): zstd compression + content-defined chunking with dedup
 
 Design:
-  - zstd (multithreaded) for all compressed data — ~5x faster than zlib
-  - Content-defined chunking via Buzhash rolling hash
+  - zstd for all compressed data — ~5x faster than zlib
+  - FastCDC content-defined chunking via Gear rolling hash
   - Deduplicated chunk store — identical chunk content stored once
-  - GIS binaries (GPKG, TIFF, SHP) stored inline raw — already compressed
   - GIS binaries (GPKG, TIFF, SHP, PNG, JPG) stored inline raw
 
 Structure (v2, all little-endian):
@@ -26,7 +25,7 @@ Structure (v2, all little-endian):
   Chunk Store:
     num_chunks: uint64
     for each chunk (insertion order):
-      hash:           32 bytes (SHA-256)
+      hash:           HASH_SIZE bytes (xxh128 if available, sha256 fallback)
       compressed_size: uint64
       raw_size:        uint64
       data:           compressed_size bytes (zstd)
@@ -39,7 +38,7 @@ Structure (v2, all little-endian):
       name:        name_len UTF-8 bytes
       if chunked:
         num_hashes: uint32
-        hashes:     num_hashes × 32 bytes (SHA-256 → Chunk Store)
+        hashes:     num_hashes × HASH_SIZE bytes
         tail_trim:  uint32  (reserved, always 0)
       else (inline):
         data_len:   uint64
@@ -48,12 +47,19 @@ Structure (v2, all little-endian):
 
 from __future__ import annotations
 
-import hashlib
-import io
 import os
 import struct
 import zlib
 from typing import Dict, List
+
+import zstandard as _zstd
+
+try:
+    import xxhash as _xxhash
+
+    _HASH_AVAILABLE = True
+except ImportError:
+    _HASH_AVAILABLE = False
 
 WOOF_MAGIC = b"WOOF"
 WOOF_VERSION_V1 = 1
@@ -66,7 +72,7 @@ FLAG_ENTRY_ZSTD = 2
 
 WOOF_XOR_KEY = 0xA5
 HEADER_SIZE = 32
-HASH_SIZE = 32  # SHA-256 bytes
+HASH_SIZE = 16 if _HASH_AVAILABLE else 32
 
 # File types that benefit from compression + resource extraction
 _COMPRESSIBLE_EXTS = frozenset(
@@ -110,47 +116,63 @@ _AVG_CHUNK = 16384
 _MAX_CHUNK = 65536
 _MASK = _AVG_CHUNK - 1
 
-_BUZHASH_TABLE: List[int] | None = None
+_GEAR_TABLE: List[int] | None = None
 
 
-def _get_buzhash_table() -> List[int]:
-    global _BUZHASH_TABLE
-    if _BUZHASH_TABLE is None:
+def _get_gear_table() -> List[int]:
+    global _GEAR_TABLE
+    if _GEAR_TABLE is None:
         import random
 
-        rng = random.Random(0)
-        _BUZHASH_TABLE = [rng.getrandbits(32) for _ in range(256)]
-    return _BUZHASH_TABLE
+        rng = random.Random(42)
+        _GEAR_TABLE = [rng.getrandbits(64) for _ in range(256)]
+    return _GEAR_TABLE
 
 
 def _chunk_data(data: bytes) -> List[bytes]:
-    """Split *data* into variable-sized chunks using Buzhash rolling hash.
+    """FastCDC-style content-defined chunking using Gear rolling hash.
 
     Average chunk size = _AVG_CHUNK (16 KB).
     No chunk is smaller than _MIN_CHUNK or larger than _MAX_CHUNK.
+    Uses a kickstart loop to skip boundary checks up to _MIN_CHUNK,
+    then re-kickstarts after each boundary for tighter distribution.
     """
-    table = _get_buzhash_table()
     n = len(data)
+    if n == 0:
+        return []
+    if n <= _MIN_CHUNK:
+        return [data]
+
+    table = _get_gear_table()
     chunks: List[bytes] = []
     start = 0
     h = 0
     i = 0
+
     while i < n:
-        chunk_len = i - start
-        if chunk_len < _MIN_CHUNK:
+        # Kickstart: skip boundary checks up to _MIN_CHUNK
+        while i < n and (i - start) < _MIN_CHUNK:
+            h = (h << 1) + table[data[i]]
             i += 1
-            continue
-        if chunk_len >= _MAX_CHUNK:
+
+        # Normal phase: check boundaries up to _MAX_CHUNK
+        found = False
+        while i < n and (i - start) < _MAX_CHUNK:
+            h = (h << 1) + table[data[i]]
+            i += 1
+            if (h & _MASK) == 0:
+                chunks.append(data[start:i])
+                start = i
+                h = 0
+                found = True
+                break
+
+        if not found and i > start:
+            # Force split at _MAX_CHUNK
             chunks.append(data[start:i])
             start = i
             h = 0
-            continue
-        h = ((h << 1) | (h >> 31)) ^ table[data[i]]
-        i += 1
-        if (h & _MASK) == 0:
-            chunks.append(data[start:i])
-            start = i
-            h = 0
+
     if start < n:
         chunks.append(data[start:])
     return chunks
@@ -159,8 +181,16 @@ def _chunk_data(data: bytes) -> List[bytes]:
 # ── Chunk store (deduplicated zstd chunks) ──────────────────────
 
 
-def _hash_chunk(chunk: bytes) -> bytes:
-    return hashlib.sha256(chunk).digest()
+if _HASH_AVAILABLE:
+
+    def _hash_chunk(chunk: bytes) -> bytes:
+        return _xxhash.xxh128(chunk).digest()
+
+else:
+    import hashlib as _hashlib
+
+    def _hash_chunk(chunk: bytes) -> bytes:
+        return _hashlib.sha256(chunk).digest()
 
 
 class _ChunkStore:
@@ -175,56 +205,59 @@ class _ChunkStore:
         h = _hash_chunk(chunk)
         if h in self._chunks:
             return h
-        import zstandard
+        cctx = _zstd.ZstdCompressor(level=level)
+        self._chunks[h] = cctx.compress(chunk)
+        self._raw_sizes[h] = len(chunk)
+        self._order.append(h)
+        return h
 
-        cctx = zstandard.ZstdCompressor(level=level)
+    def add_by_hash(self, chunk: bytes, h: bytes, level: int = 3) -> bytes:
+        """Add chunk with pre-computed hash (avoids re-hashing)."""
+        if h in self._chunks:
+            return h
+        cctx = _zstd.ZstdCompressor(level=level)
         self._chunks[h] = cctx.compress(chunk)
         self._raw_sizes[h] = len(chunk)
         self._order.append(h)
         return h
 
     def get(self, h: bytes) -> bytes:
-        import zstandard
-
-        dctx = zstandard.ZstdDecompressor()
+        dctx = _zstd.ZstdDecompressor()
         return dctx.decompress(self._chunks[h])
 
     def get_raw_size(self, h: bytes) -> int:
         return self._raw_sizes.get(h, 0)
 
-    def peek_dedup_raw(self, chunks: List[bytes]) -> int:
-        """Return total raw size of unique chunks NOT already in store."""
+    def sum_raw_sizes(self, hashes: List[bytes], raw_sizes: List[int]) -> int:
+        """Return total raw size of chunks, counting stored dedup sizes."""
         total = 0
-        for c in chunks:
-            h = _hash_chunk(c)
-            if h in self._chunks:
-                total += self._raw_sizes[h]
-            else:
-                total += len(c)
+        for h, sz in zip(hashes, raw_sizes):
+            total += self._raw_sizes.get(h, sz)
         return total
 
     def serialize(self) -> bytes:
-        buf = io.BytesIO()
-        buf.write(struct.pack("<Q", len(self._order)))
+        buf = bytearray()
+        buf.extend(struct.pack("<Q", len(self._order)))
         for h in self._order:
             compressed = self._chunks[h]
-            buf.write(h)
-            buf.write(struct.pack("<QQ", len(compressed), self._raw_sizes[h]))
-            buf.write(compressed)
-        return buf.getvalue()
+            buf.extend(h)
+            buf.extend(struct.pack("<QQ", len(compressed), self._raw_sizes[h]))
+            buf.extend(compressed)
+        return bytes(buf)
 
     @classmethod
     def deserialize(cls, data: bytes) -> _ChunkStore:
         store = cls()
+        view = memoryview(data)
         offset = 0
-        num = struct.unpack("<Q", data[offset : offset + 8])[0]
+        num = struct.unpack("<Q", view[offset : offset + 8])[0]
         offset += 8
         for _ in range(num):
-            h = data[offset : offset + 32]
-            offset += 32
-            comp_size, raw_size = struct.unpack("<QQ", data[offset : offset + 16])
+            h = bytes(view[offset : offset + HASH_SIZE])
+            offset += HASH_SIZE
+            comp_size, raw_size = struct.unpack("<QQ", view[offset : offset + 16])
             offset += 16
-            compressed = data[offset : offset + comp_size]
+            compressed = bytes(view[offset : offset + comp_size])
             offset += comp_size
             store._chunks[h] = compressed
             store._raw_sizes[h] = raw_size
@@ -254,52 +287,53 @@ def _pack_v2(
 ) -> bytes:
     """Build a v2 .woof byte array with zstd + CDC chunk dedup."""
     store = _ChunkStore()
-    ftable = io.BytesIO()
+    ftable = bytearray()
+    cctx = _zstd.ZstdCompressor(level=level, threads=-1) if compress else None
 
     for name in sorted(entries.keys()):
         content = entries[name]
         name_bytes = name.encode("utf-8")
         if compress:
-            import zstandard
-
-            cctx = zstandard.ZstdCompressor(level=level)
             compressed = cctx.compress(content)
             if len(compressed) < len(content):
                 # whole-file zstd helps — also try CDC for text files
                 if len(content) >= 32768 and _is_compressible(name):
                     chunks = _chunk_data(content)
-                    dedup_raw = store.peek_dedup_raw(chunks)
+                    chunk_hashes = [_hash_chunk(c) for c in chunks]
+                    chunk_sizes = [len(c) for c in chunks]
+                    dedup_raw = store.sum_raw_sizes(chunk_hashes, chunk_sizes)
                     if dedup_raw < len(content):
-                        hashes = [store.add(c, level) for c in chunks]
-                        flags = FLAG_ENTRY_CHUNKED
-                        ftable.write(struct.pack("<II", flags, len(name_bytes)))
-                        ftable.write(name_bytes)
-                        ftable.write(struct.pack("<II", len(hashes), 0))
+                        hashes = [
+                            store.add_by_hash(c, h, level)
+                            for c, h in zip(chunks, chunk_hashes)
+                        ]
+                        ftable.extend(
+                            struct.pack("<II", FLAG_ENTRY_CHUNKED, len(name_bytes))
+                        )
+                        ftable.extend(name_bytes)
+                        ftable.extend(struct.pack("<II", len(hashes), 0))
                         for h in hashes:
-                            ftable.write(h)
+                            ftable.extend(h)
                         continue
                 flags = FLAG_ENTRY_ZSTD
-                ftable.write(struct.pack("<II", flags, len(name_bytes)))
-                ftable.write(name_bytes)
-                ftable.write(struct.pack("<Q", len(compressed)))
-                ftable.write(compressed)
+                ftable.extend(struct.pack("<II", flags, len(name_bytes)))
+                ftable.extend(name_bytes)
+                ftable.extend(struct.pack("<Q", len(compressed)))
+                ftable.extend(compressed)
             else:
-                flags = 0
-                ftable.write(struct.pack("<II", flags, len(name_bytes)))
-                ftable.write(name_bytes)
-                ftable.write(struct.pack("<Q", len(content)))
-                ftable.write(content)
+                ftable.extend(struct.pack("<II", 0, len(name_bytes)))
+                ftable.extend(name_bytes)
+                ftable.extend(struct.pack("<Q", len(content)))
+                ftable.extend(content)
         else:
-            flags = 0
-            ftable.write(struct.pack("<II", flags, len(name_bytes)))
-            ftable.write(name_bytes)
-            ftable.write(struct.pack("<Q", len(content)))
-            ftable.write(content)
+            ftable.extend(struct.pack("<II", 0, len(name_bytes)))
+            ftable.extend(name_bytes)
+            ftable.extend(struct.pack("<Q", len(content)))
+            ftable.extend(content)
 
     has_chunks = len(store._order) > 0
     chunk_bytes = store.serialize() if has_chunks else b""
-    ftable_bytes = ftable.getvalue()
-    payload = chunk_bytes + ftable_bytes
+    payload = chunk_bytes + bytes(ftable)
 
     total_raw = sum(len(c) for c in entries.values())
     flags = 0
@@ -322,49 +356,49 @@ def _pack_v2(
 def _unpack_v2(payload: bytes, hdr_flags: int = 0) -> Dict[str, bytes]:
     """Parse a v2 .woof payload into named entries."""
     store = _ChunkStore()
+    view = memoryview(payload)
     offset = 0
     if hdr_flags & FLAG_HAS_CHUNK_STORE:
         store = _ChunkStore.deserialize(payload)
         offset = 8
-        num_chunks = struct.unpack("<Q", payload[0:8])[0]
+        num_chunks = struct.unpack("<Q", view[0:8])[0]
         for _ in range(num_chunks):
-            offset += 32
-            comp_size, _ = struct.unpack("<QQ", payload[offset : offset + 16])
-            offset += 16
-            offset += comp_size
-    ftable = payload[offset:]
+            offset += HASH_SIZE
+            comp_size, _ = struct.unpack("<QQ", view[offset : offset + 16])
+            offset += 16 + comp_size
+    ftable = view[offset:]
 
     entries: Dict[str, bytes] = {}
     fp = 0
-    while fp < len(ftable):
+    ftable_len = len(ftable)
+    while fp < ftable_len:
         flags, name_len = struct.unpack("<II", ftable[fp : fp + 8])
         fp += 8
-        name = ftable[fp : fp + name_len].decode("utf-8")
+        name = bytes(ftable[fp : fp + name_len]).decode("utf-8")
         fp += name_len
 
         if flags & FLAG_ENTRY_CHUNKED:
             num_hashes, tail_trim = struct.unpack("<II", ftable[fp : fp + 8])
             fp += 8
+            hash_bytes_len = num_hashes * HASH_SIZE
             parts = [
-                store.get(ftable[fp + i : fp + i + 32])
-                for i in range(0, num_hashes * 32, 32)
+                store.get(bytes(ftable[fp + i : fp + i + HASH_SIZE]))
+                for i in range(0, hash_bytes_len, HASH_SIZE)
             ]
-            fp += num_hashes * 32
+            fp += hash_bytes_len
             content = b"".join(parts)
             if tail_trim and tail_trim <= len(content):
                 content = content[:-tail_trim]
         elif flags & FLAG_ENTRY_ZSTD:
-            import zstandard
-
-            dctx = zstandard.ZstdDecompressor()
+            dctx = _zstd.ZstdDecompressor()
             data_len = struct.unpack("<Q", ftable[fp : fp + 8])[0]
             fp += 8
-            content = dctx.decompress(ftable[fp : fp + data_len])
+            content = dctx.decompress(bytes(ftable[fp : fp + data_len]))
             fp += data_len
         else:
             data_len = struct.unpack("<Q", ftable[fp : fp + 8])[0]
             fp += 8
-            content = ftable[fp : fp + data_len]
+            content = bytes(ftable[fp : fp + data_len])
             fp += data_len
 
         entries[name] = content
@@ -384,8 +418,8 @@ def _pack_v1(
     *level* = zlib compression level (1-9, default 6 matches ZIP).
     Uses try-compress-keep-smallest strategy for all files when *compress*=True.
     """
-    buf = io.BytesIO()
-    buf.write(b"\0" * HEADER_SIZE)
+    buf = bytearray()
+    buf.extend(b"\0" * HEADER_SIZE)
     total_raw = 0
     for name in sorted(entries.keys()):
         content = entries[name]
@@ -402,12 +436,12 @@ def _pack_v1(
             payload = content
             flags = 0
         name_bytes = name.encode("utf-8")
-        buf.write(struct.pack("<II", flags, len(name_bytes)))
-        buf.write(name_bytes)
-        buf.write(struct.pack("<Q", len(payload)))
-        buf.write(payload)
+        buf.extend(struct.pack("<II", flags, len(name_bytes)))
+        buf.extend(name_bytes)
+        buf.extend(struct.pack("<Q", len(payload)))
+        buf.extend(payload)
 
-    payload_data = buf.getvalue()[HEADER_SIZE:]
+    payload_data = bytes(buf[HEADER_SIZE:])
     header = struct.pack(
         "<4sIQQQ",
         WOOF_MAGIC,
@@ -422,15 +456,17 @@ def _pack_v1(
 def _unpack_v1(payload: bytes) -> Dict[str, bytes]:
     """Parse a v1 .woof payload into named entries."""
     entries: Dict[str, bytes] = {}
+    view = memoryview(payload)
     offset = 0
-    while offset < len(payload):
-        flags, name_len = struct.unpack("<II", payload[offset : offset + 8])
+    total = len(payload)
+    while offset < total:
+        flags, name_len = struct.unpack("<II", view[offset : offset + 8])
         offset += 8
-        name = payload[offset : offset + name_len].decode("utf-8")
+        name = bytes(view[offset : offset + name_len]).decode("utf-8")
         offset += name_len
-        content_len = struct.unpack("<Q", payload[offset : offset + 8])[0]
+        content_len = struct.unpack("<Q", view[offset : offset + 8])[0]
         offset += 8
-        content = payload[offset : offset + content_len]
+        content = bytes(view[offset : offset + content_len])
         offset += content_len
         if flags & 1:
             content = zlib.decompress(content)

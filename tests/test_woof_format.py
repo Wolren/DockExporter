@@ -91,7 +91,7 @@ class TestWoofConstants:
         assert HEADER_SIZE == 32
 
     def test_hash_size(self):
-        assert HASH_SIZE == 32  # SHA-256
+        assert HASH_SIZE in (16, 32)  # xxh128 if available, sha256 fallback
 
 
 class TestXor:
