@@ -36,15 +36,39 @@ N_COLS = 6
 
 VECTOR_FORMATS = [
     ("Default", ""),
-    ("GPKG", "GPKG"),
+    ("GeoPackage", "GPKG"),
     ("Shapefile", "ESRI Shapefile"),
     ("GeoJSON", "GeoJSON"),
     ("KML", "KML"),
+    ("CSV", "CSV"),
     ("FlatGeobuf", "FlatGeobuf"),
+    ("GPX", "GPX"),
+    ("GML", "GML"),
+    ("TopoJSON", "TopoJSON"),
+    ("SQLite", "SQLite"),
+    ("SpatiaLite", "SpatiaLite"),
+    ("GeoJSON (Newline Delimited)", "GeoJSONSeq"),
+    ("DXF", "DXF"),
+    ("Microstation DGN", "DGN"),
+    ("MapInfo TAB", "MapInfo File"),
+    ("GeoParquet", "Parquet"),
+    ("Arrow", "Arrow"),
+    ("MBTiles", "MBTiles"),
+    ("ESRI File Geodatabase", "FileGDB"),
+    ("GeoRSS", "GeoRSS"),
+    ("XLSX", "XLSX"),
+    ("ODS", "ODS"),
 ]
 RASTER_FORMATS = [
     ("Default", ""),
     ("GeoTIFF", "GTiff"),
+    ("PNG", "PNG"),
+    ("JPEG", "JPEG"),
+    ("JPEG2000", "JPEG2000"),
+    ("WebP", "WEBP"),
+    ("BMP", "BMP"),
+    ("MBTiles", "MBTiles"),
+    ("ERDAS Imagine", "HFA"),
 ]
 FORMAT_DEFAULT_KEY = ""
 
@@ -76,6 +100,7 @@ class LayerTableWidget(QTableWidget):
         self._filters: Dict[str, str] = {}
         self._target_crs: Dict[str, str] = {}
         self._export_warnings: Dict[str, str] = {}
+        self._row_for_layer: Dict[str, int] = {}
 
         self._setup_header()
         self._setup_appearance()
@@ -88,15 +113,18 @@ class LayerTableWidget(QTableWidget):
         self.setHorizontalHeaderLabels(headers)
         hh = self.horizontalHeader()
         hh.setSectionResizeMode(COL_TYPE, QHeaderView.ResizeMode.Fixed)
-        hh.setSectionResizeMode(COL_SOURCE, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(COL_EXPORT, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(COL_SOURCE, QHeaderView.ResizeMode.Interactive)
+        hh.setSectionResizeMode(COL_EXPORT, QHeaderView.ResizeMode.Interactive)
         hh.setSectionResizeMode(COL_FORMAT, QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(COL_FILTER, QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(COL_CRS, QHeaderView.ResizeMode.Fixed)
+        hh.setStretchLastSection(False)
         self.setColumnWidth(COL_TYPE, 34)
+        self.setColumnWidth(COL_SOURCE, 180)
+        self.setColumnWidth(COL_EXPORT, 180)
         self.setColumnWidth(COL_FORMAT, 90 if self._show_format else 0)
         self.setColumnWidth(COL_FILTER, 64)
-        self.setColumnWidth(COL_CRS, 112)
+        self.setColumnWidth(COL_CRS, 82)
         self.setColumnHidden(COL_FORMAT, not self._show_format)
 
     def _setup_appearance(self) -> None:
@@ -118,6 +146,7 @@ class LayerTableWidget(QTableWidget):
         prev_selected = set(self.selected_layer_ids())
         self.blockSignals(True)
         self.setRowCount(0)
+        self._row_for_layer.clear()
 
         rows_to_reselect: List[int] = []
         for layer in layers:
@@ -130,6 +159,7 @@ class LayerTableWidget(QTableWidget):
 
             row = self.rowCount()
             self.insertRow(row)
+            self._row_for_layer[layer.id()] = row
 
             block_reason = layer_export_block_reason(layer)
             self._export_warnings[layer.id()] = block_reason
@@ -219,42 +249,38 @@ class LayerTableWidget(QTableWidget):
         self._emit_selection_changed()
 
     def _on_format_changed(self, layer_id: str, formats: List[Tuple[str, str]]) -> None:
-        for row in range(self.rowCount()):
-            combo = self.cellWidget(row, COL_FORMAT)
-            if combo is None:
-                continue
-            item = self.item(row, COL_TYPE)
-            if item is None or item.data(Qt.ItemDataRole.UserRole) != layer_id:
-                continue
-            idx = combo.currentIndex()
-            if 0 <= idx < len(formats):
-                driver = formats[idx][1]
-                old = self._format_overrides.get(layer_id, "")
-                if driver != old:
-                    self._format_overrides[layer_id] = driver
-                    self.format_changed.emit(layer_id, driver)
-            break
+        row = self._row_for_layer.get(layer_id)
+        if row is None:
+            return
+        combo = self.cellWidget(row, COL_FORMAT)
+        if combo is None:
+            return
+        idx = combo.currentIndex()
+        if 0 <= idx < len(formats):
+            driver = formats[idx][1]
+            old = self._format_overrides.get(layer_id, "")
+            if driver != old:
+                self._format_overrides[layer_id] = driver
+                self.format_changed.emit(layer_id, driver)
 
     def set_format_override(self, layer_id: str, driver: str) -> None:
         """Set the format override for a layer. Empty string means default (global)."""
         self._format_overrides[layer_id] = driver
-        for row in range(self.rowCount()):
-            combo = self.cellWidget(row, COL_FORMAT)
-            if combo is None:
-                continue
-            item = self.item(row, COL_TYPE)
-            if item is None or item.data(Qt.ItemDataRole.UserRole) != layer_id:
-                continue
-            layer = QgsProject.instance().mapLayer(layer_id)
-            is_vector = isinstance(layer, QgsVectorLayer)
-            formats = VECTOR_FORMATS if is_vector else RASTER_FORMATS
-            for idx, (_label, d) in enumerate(formats):
-                if d == driver:
-                    combo.blockSignals(True)
-                    combo.setCurrentIndex(idx)
-                    combo.blockSignals(False)
-                    break
-            break
+        row = self._row_for_layer.get(layer_id)
+        if row is None:
+            return
+        combo = self.cellWidget(row, COL_FORMAT)
+        if combo is None:
+            return
+        layer = QgsProject.instance().mapLayer(layer_id)
+        is_vector = isinstance(layer, QgsVectorLayer)
+        formats = VECTOR_FORMATS if is_vector else RASTER_FORMATS
+        for idx, (_label, d) in enumerate(formats):
+            if d == driver:
+                combo.blockSignals(True)
+                combo.setCurrentIndex(idx)
+                combo.blockSignals(False)
+                break
 
     def get_format_override(self, layer_id: str) -> str:
         """Return the format override for a layer, or empty string for default."""
@@ -263,17 +289,16 @@ class LayerTableWidget(QTableWidget):
     def set_filter(self, layer_id: str, expression: str) -> None:
         """Set a filter expression badge for a specific layer."""
         self._filters[layer_id] = expression
-        for row in range(self.rowCount()):
-            if self._layer_id_for_row(row) == layer_id:
-                filt_item = self.item(row, COL_FILTER)
-                if filt_item:
-                    has = bool(expression.strip())
-                    filt_item.setText("\u26a1" if has else "")
-                    filt_item.setToolTip(f"Filter:\n{expression}" if has else "")
-                    filt_item.setForeground(
-                        QBrush(QColor("#e67e22") if has else QColor("#999999"))
-                    )
-                break
+        row = self._row_for_layer.get(layer_id)
+        if row is not None:
+            filt_item = self.item(row, COL_FILTER)
+            if filt_item:
+                has = bool(expression.strip())
+                filt_item.setText("\u26a1" if has else "")
+                filt_item.setToolTip(f"Filter:\n{expression}" if has else "")
+                filt_item.setForeground(
+                    QBrush(QColor("#e67e22") if has else QColor("#999999"))
+                )
 
     def get_filters(self) -> Dict[str, str]:
         """Return a copy of the current filter dict."""
@@ -286,15 +311,14 @@ class LayerTableWidget(QTableWidget):
     def set_target_crs(self, layer_id: str, authid: str) -> None:
         """Update the displayed target CRS for a layer."""
         self._target_crs[layer_id] = authid
-        for row in range(self.rowCount()):
-            if self._layer_id_for_row(row) == layer_id:
-                crs_item = self.item(row, COL_CRS)
-                if crs_item:
-                    self.blockSignals(True)
-                    crs_item.setText(authid)
-                    self._apply_crs_style(crs_item)
-                    self.blockSignals(False)
-                break
+        row = self._row_for_layer.get(layer_id)
+        if row is not None:
+            crs_item = self.item(row, COL_CRS)
+            if crs_item:
+                self.blockSignals(True)
+                crs_item.setText(authid)
+                self._apply_crs_style(crs_item)
+                self.blockSignals(False)
 
     def export_warning(self, layer_id: str) -> str:
         return self._export_warnings.get(layer_id, "")
@@ -358,13 +382,12 @@ class LayerTableWidget(QTableWidget):
         """Select and scroll to a specific layer row."""
         if not layer:
             return
-        self.clearSelection()
-        for row in range(self.rowCount()):
-            if self._layer_id_for_row(row) == layer.id():
-                self.selectRow(row)
-                self.scrollToItem(self.item(row, COL_SOURCE))
-                break
-        self._emit_selection_changed()
+        row = self._row_for_layer.get(layer.id())
+        if row is not None:
+            self.clearSelection()
+            self.selectRow(row)
+            self.scrollToItem(self.item(row, COL_SOURCE))
+            self._emit_selection_changed()
 
     def count_filters(self) -> int:
         """Return the number of layers with non-empty filter expressions."""

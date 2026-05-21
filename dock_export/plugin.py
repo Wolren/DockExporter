@@ -1,10 +1,14 @@
 """Plugin entry point for Dock Export. Manages dock widget lifecycle and context menu."""
 
+import os
+
 from qgis.PyQt.QtCore import Qt, QPoint
-from qgis.PyQt.QtWidgets import QAction, QMenu
-from qgis.core import QgsMapLayer, QgsProject
+from qgis.PyQt.QtGui import QAction
+from qgis.PyQt.QtWidgets import QFileDialog, QMenu, QMessageBox
+from qgis.core import QgsMapLayer
 
 from .dock_widget import ExportDockWidget
+from .woof_storage import open_woof_project
 
 
 class DockExportPlugin:
@@ -14,6 +18,7 @@ class DockExportPlugin:
         self.iface = iface
         self._dock: ExportDockWidget = None
         self._action: QAction = None
+        self._open_woof_action: QAction = None
 
     def initGui(self):
         """Set up toolbar icon, plugin menu, and layer tree context menu."""
@@ -22,6 +27,14 @@ class DockExportPlugin:
         self._action.triggered.connect(self._toggle_dock)
         self.iface.addToolBarIcon(self._action)
         self.iface.addPluginToMenu("&Dock Export", self._action)
+
+        # Add "Open .woof Project..." action
+        self._open_woof_action = QAction(
+            "Open .woof Project...", self.iface.mainWindow()
+        )
+        self._open_woof_action.triggered.connect(self._on_open_woof)
+        self.iface.addPluginToMenu("&Dock Export", self._open_woof_action)
+
         self.layer_tree_view = self.iface.layerTreeView()
         if self.layer_tree_view:
             self.layer_tree_view.setContextMenuPolicy(
@@ -37,6 +50,8 @@ class DockExportPlugin:
         """Remove toolbar icon, menu entries, dock widget, and disconnect signals."""
         self.iface.removeToolBarIcon(self._action)
         self.iface.removePluginMenu("&Dock Export", self._action)
+        if self._open_woof_action:
+            self.iface.removePluginMenu("&Dock Export", self._open_woof_action)
         if self._dock:
             self.iface.removeDockWidget(self._dock)
             self._dock.deleteLater()
@@ -62,6 +77,25 @@ class DockExportPlugin:
             if self._dock:
                 self._dock.hide()
 
+    def _on_open_woof(self) -> None:
+        """Show file picker for .woof, extract, and open the project."""
+        path, _ = QFileDialog.getOpenFileName(
+            self.iface.mainWindow(),
+            "Open .woof Project",
+            "",
+            "Woof archive (*.woof);;All Files (*)",
+        )
+        if not path:
+            return
+
+        if not open_woof_project(path):
+            QMessageBox.warning(
+                self.iface.mainWindow(),
+                "Open Woof",
+                f"Could not open {os.path.basename(path)}.\n"
+                "Make sure the file is a valid .woof archive.",
+            )
+
     def _on_visibility_changed(self, visible: bool) -> None:
         if self._action:
             self._action.setChecked(visible)
@@ -80,7 +114,10 @@ class DockExportPlugin:
             return
 
         layer = node.layer()
-        if layer.type() not in (QgsMapLayer.VectorLayer, QgsMapLayer.RasterLayer):
+        if layer.type() not in (
+            QgsMapLayer.LayerType.VectorLayer,
+            QgsMapLayer.LayerType.RasterLayer,
+        ):
             return
 
         menu: QMenu = self.layer_tree_view.menuProvider().createContextMenu()
@@ -90,7 +127,7 @@ class DockExportPlugin:
         action.triggered.connect(lambda: self._open_dock_export_for_layer(layer))
 
         global_pos = self.layer_tree_view.viewport().mapToGlobal(point)
-        menu.exec_(global_pos)
+        menu.exec(global_pos)
 
     def _open_dock_export_for_layer(self, layer) -> None:
         """Open dock and select the given layer in the table."""

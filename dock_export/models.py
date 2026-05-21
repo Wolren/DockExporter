@@ -1,7 +1,6 @@
 """Pure-data classes: ExportSpec (single export job) and ExportResult (outcome)."""
 
 from dataclasses import dataclass
-from typing import Optional
 
 
 class StyleMode:
@@ -45,6 +44,7 @@ class ExportSpec:
     """
 
     source_layer_id: str = ""
+    source_name: str = ""
     export_name: str = ""
     target_mode: str = "single"
     output_path: str = ""
@@ -56,7 +56,16 @@ class ExportSpec:
 
     @property
     def is_raster_driver(self) -> bool:
-        return self.driver in ("GTiff", "PNG", "JPEG")
+        return self.driver in (
+            "GTiff",
+            "PNG",
+            "JPEG",
+            "JPEG2000",
+            "WEBP",
+            "BMP",
+            "HFA",
+            "MBTiles",
+        )
 
     @property
     def file_extension(self) -> str:
@@ -67,9 +76,28 @@ class ExportSpec:
             "GeoJSONSeq": ".geojsonl",
             "KML": ".kml",
             "FlatGeobuf": ".fgb",
+            "GPX": ".gpx",
+            "GML": ".gml",
+            "TopoJSON": ".topojson",
+            "SQLite": ".sqlite",
+            "SpatiaLite": ".sqlite",
+            "DXF": ".dxf",
+            "DGN": ".dgn",
+            "MapInfo File": ".tab",
+            "Parquet": ".parquet",
+            "Arrow": ".arrow",
+            "MBTiles": ".mbtiles",
+            "FileGDB": ".gdb",
+            "GeoRSS": ".xml",
+            "XLSX": ".xlsx",
+            "ODS": ".ods",
             "GTiff": ".tif",
             "PNG": ".png",
             "JPEG": ".jpg",
+            "JPEG2000": ".jp2",
+            "WEBP": ".webp",
+            "BMP": ".bmp",
+            "HFA": ".img",
         }
         return mapping.get(self.driver, ".gpkg")
 

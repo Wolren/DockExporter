@@ -19,7 +19,12 @@ from qgis.core import (
     QgsFields,
     QgsMapLayer,
     QgsProject,
+    QgsRasterBlockFeedback,
+    QgsRasterFileWriter,
     QgsRasterLayer,
+    QgsRasterPipe,
+    QgsRasterProjector,
+    QgsRenderContext,
     QgsVectorFileWriter,
     QgsVectorLayer,
     QgsWkbTypes,
@@ -75,13 +80,26 @@ class ExportEngine:
 
     def __init__(self, style_manager: Optional[StyleManager] = None):
         self._style = style_manager or StyleManager()
+        self._cancel_requested = False
+
+    @property
+    def cancel_requested(self) -> bool:
+        return self._cancel_requested
+
+    def cancel_export(self) -> None:
+        """Request cancellation after the current spec finishes."""
+        self._cancel_requested = True
 
     def run(self, specs: List[ExportSpec], progress_cb=None) -> List[ExportResult]:
         """Execute a list of ExportSpec objects. Returns list of ExportResult."""
+        self._cancel_requested = False
         results: List[ExportResult] = []
         total = len(specs)
 
         for i, spec in enumerate(specs):
+            if self._cancel_requested:
+                break
+
             msg = f"Exporting '{spec.export_name}'..."
             if progress_cb:
                 progress_cb(i, total, msg)
@@ -93,7 +111,11 @@ class ExportEngine:
                 self._replace_project_source(spec, result)
 
         if progress_cb:
-            progress_cb(total, total, "Done")
+            progress_cb(
+                total if not self._cancel_requested else len(results),
+                total,
+                "Cancelled" if self._cancel_requested else "Done",
+            )
         return results
 
     def _export_one(self, spec: ExportSpec) -> ExportResult:
@@ -216,12 +238,16 @@ class ExportEngine:
             return
 
         needs_reset_id = spec.driver == "GPKG" or is_gpkg_mode
-        features = list(write_source.getFeatures())
-        if needs_reset_id:
-            for f in features:
-                f.setId(-1)
 
-        ok = writer.addFeatures(features)
+        def _feature_generator():
+            for f in write_source.getFeatures():
+                if self._cancel_requested:
+                    break
+                if needs_reset_id:
+                    f.setId(-1)
+                yield f
+
+        ok = writer.addFeatures(_feature_generator())
         if not ok:
             result.error = writer.errorMessage() or "Failed while adding features"
             del writer
@@ -299,8 +325,7 @@ class ExportEngine:
                 result.error = f"GDAL could not open raster source: {src_path}"
                 return
 
-            driver_name = "GTiff" if spec.driver == "GTiff" else spec.driver
-            translate_kwargs = {"format": driver_name}
+            translate_kwargs = {"format": spec.driver}
             if spec.target_crs_authid.strip():
                 translate_kwargs["outputSRS"] = spec.target_crs_authid.strip()
             gdal.Translate(output_path, src_ds, **translate_kwargs)
@@ -367,6 +392,92 @@ class ExportEngine:
 
         except Exception as exc:
             result.error = f"GDAL GPKG translate error: {exc}"
+
+    def export_raster_to_gpkg_via_pipe(
+        self,
+        layer: QgsRasterLayer,
+        gpkg_path: str,
+        table_name: str,
+        target_crs: QgsCoordinateReferenceSystem = None,
+    ) -> Tuple[bool, str]:
+        """Export any raster layer (including WMS/WMTS) to GPKG using QGIS raster pipe.
+
+        This works for all raster providers because it uses the QGIS rendering pipeline
+        rather than GDAL file access. Slower than GDAL Translate for file-based rasters
+        but handles remote layers (WMS, WMTS, XYZ) correctly.
+        Returns (success, error_message).
+        """
+        from osgeo import gdal
+
+        dp = layer.dataProvider()
+        if dp is None:
+            return False, "No data provider"
+
+        try:
+            # Resolve target CRS
+            dst_crs = target_crs if target_crs and target_crs.isValid() else layer.crs()
+
+            # Build raster pipe
+            projector = QgsRasterProjector()
+            projector.setCrs(
+                dp.crs(), dst_crs, QgsProject.instance().transformContext()
+            )
+            pipe = QgsRasterPipe()
+            clone = dp.clone()
+            if clone is None:
+                return False, "Could not clone data provider"
+            pipe.set(clone)
+            pipe.insert(2, projector)
+
+            # Write to GPKG with temporary name to avoid encoding issues
+            import uuid
+
+            tmp_name = uuid.uuid4().hex
+            writer = QgsRasterFileWriter(gpkg_path)
+            writer.setOutputFormat("GPKG")
+            writer.setCreateOptions(
+                [
+                    f"RASTER_TABLE={tmp_name}",
+                    "APPEND_SUBDATASET=YES",
+                ]
+            )
+            feedback = QgsRasterBlockFeedback()
+            err = writer.writeRaster(
+                pipe,
+                dp.xSize(),
+                dp.ySize(),
+                dp.extent(),
+                dst_crs,
+                QgsProject.instance().transformContext(),
+                feedback,
+            )
+
+            if err != QgsRasterFileWriter.WriterError.NoError:
+                errors = feedback.errors() or []
+                msg = f"Raster pipe write error {err}"
+                if errors:
+                    msg += f": {'; '.join(str(e) for e in errors)}"
+                return False, msg
+
+            # Rename temporary table to desired name
+            gdal.UseExceptions()
+            src_ds = gdal.OpenEx(gpkg_path, gdal.OF_VECTOR)
+            try:
+                src_ds.ExecuteSQL(f'ALTER TABLE "{tmp_name}" RENAME TO "{table_name}"')
+            finally:
+                src_ds = None
+
+            # Update gpkg_contents
+            with gdal.OpenEx(gpkg_path, gdal.OF_UPDATE) as ds:
+                ds.ExecuteSQL(
+                    f"UPDATE gpkg_contents SET table_name = '{table_name}', "
+                    f"identifier = '{table_name}' WHERE table_name = '{tmp_name}'"
+                )
+
+            return True, ""
+
+        except Exception as exc:
+            return False, str(exc)
 
     @staticmethod
     def _make_filtered_clone(

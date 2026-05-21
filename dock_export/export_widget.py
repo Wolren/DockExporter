@@ -1,14 +1,19 @@
-"""Main export UI with Single Files and GeoPackage tabs. Builds ExportSpec list from table state."""
+"""Main export UI with Single Files, GeoPackage, and History tabs. Builds ExportSpec list from table state."""
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from typing import Dict, List
 
+from qgis.PyQt.QtCore import QThread
+
 from qgis.PyQt.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QGridLayout,
     QGroupBox,
@@ -25,7 +30,6 @@ from qgis.PyQt.QtWidgets import (
     QWidget,
 )
 from qgis.core import (
-    Qgis,
     QgsCoordinateReferenceSystem,
     QgsProject,
     QgsRasterLayer,
@@ -33,13 +37,98 @@ from qgis.core import (
     QgsVectorLayer,
 )
 
-from .export_engine import ExportEngine, ExportResult, layer_export_block_reason
+from .export_engine import ExportResult, layer_export_block_reason
+from .export_worker import ExportWorker
 from .layer_table_widget import LayerTableWidget
 from .models import ExportSpec, StyleMode
+from .project_export_tab import ProjectExportTab
 from .sql_filter_widget import SQLFilterDialog
-from .style_manager import StyleManager
 
 SETTINGS_ROOT = "DockExport"
+
+VECTOR_FORMAT_DEFS = [
+    ("GeoPackage", "GPKG"),
+    ("Shapefile", "ESRI Shapefile"),
+    ("GeoJSON", "GeoJSON"),
+    ("KML", "KML"),
+    ("CSV", "CSV"),
+    ("FlatGeobuf", "FlatGeobuf"),
+    ("GPX", "GPX"),
+    ("GML", "GML"),
+    ("TopoJSON", "TopoJSON"),
+    ("SQLite", "SQLite"),
+    ("SpatiaLite", "SpatiaLite"),
+    ("GeoJSON (Newline Delimited)", "GeoJSONSeq"),
+    ("DXF", "DXF"),
+    ("Microstation DGN", "DGN"),
+    ("MapInfo TAB", "MapInfo File"),
+    ("GeoParquet", "Parquet"),
+    ("Arrow", "Arrow"),
+    ("MBTiles", "MBTiles"),
+    ("ESRI File Geodatabase", "FileGDB"),
+    ("GeoRSS", "GeoRSS"),
+    ("XLSX", "XLSX"),
+    ("ODS", "ODS"),
+]
+RASTER_FORMAT_DEFS = [
+    ("GeoTIFF", "GTiff"),
+    ("PNG", "PNG"),
+    ("JPEG", "JPEG"),
+    ("JPEG2000", "JPEG2000"),
+    ("WebP", "WEBP"),
+    ("BMP", "BMP"),
+    ("MBTiles", "MBTiles"),
+    ("ERDAS Imagine", "HFA"),
+]
+
+
+class FormatDialog(QDialog):
+    """Modal dialog for selecting export formats."""
+
+    def __init__(
+        self,
+        vector_selected: set[str],
+        raster_selected: set[str],
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Select export formats")
+        self.setMinimumWidth(400)
+
+        layout = QVBoxLayout(self)
+
+        vec_group = QGroupBox("Vector formats")
+        vec_grid = QGridLayout(vec_group)
+        self._vec_checks: dict[str, QCheckBox] = {}
+        for idx, (label, driver) in enumerate(VECTOR_FORMAT_DEFS):
+            cb = QCheckBox(label)
+            cb.setChecked(driver in vector_selected)
+            self._vec_checks[driver] = cb
+            vec_grid.addWidget(cb, idx // 3, idx % 3)
+        layout.addWidget(vec_group)
+
+        ras_group = QGroupBox("Raster formats")
+        ras_grid = QGridLayout(ras_group)
+        self._ras_checks: dict[str, QCheckBox] = {}
+        for idx, (label, driver) in enumerate(RASTER_FORMAT_DEFS):
+            cb = QCheckBox(label)
+            cb.setChecked(driver in raster_selected)
+            self._ras_checks[driver] = cb
+            ras_grid.addWidget(cb, idx // 3, idx % 3)
+        layout.addWidget(ras_group)
+
+        btn_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btn_box.accepted.connect(self.accept)
+        btn_box.rejected.connect(self.reject)
+        layout.addWidget(btn_box)
+
+    def get_vector_selected(self) -> set[str]:
+        return {d for d, cb in self._vec_checks.items() if cb.isChecked()}
+
+    def get_raster_selected(self) -> set[str]:
+        return {d for d, cb in self._ras_checks.items() if cb.isChecked()}
 
 
 class ExportWidget(QWidget):
@@ -48,16 +137,24 @@ class ExportWidget(QWidget):
     def __init__(self, iface, parent=None):
         super().__init__(parent)
         self.iface = iface
-        self._engine = ExportEngine(StyleManager())
         self._filters: Dict[str, str] = {}
         self._target_crs: Dict[str, str] = {}
         self._filter_dialog = None
         self._log_entries: List[str] = []
+        self._vector_selected: set[str] = {"GPKG"}
+        self._raster_selected: set[str] = {"GTiff"}
 
         self._build_ui()
         self._load_settings()
         self._refresh_layers()
         self._connect_project_signals()
+
+    @staticmethod
+    def _sanitize_name(name: str) -> str:
+        """Replace filesystem-unsafe characters with underscore."""
+        for ch in r'\/:*?"<>|':
+            name = name.replace(ch, "_")
+        return name
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -67,6 +164,8 @@ class ExportWidget(QWidget):
         self._tabs = QTabWidget()
         self._tabs.addTab(self._build_single_tab(), "Single files")
         self._tabs.addTab(self._build_gpkg_tab(), "GeoPackage")
+        self._tabs.addTab(self._build_project_tab(), "Project Export")
+        self._tabs.addTab(self._build_log_tab(), "History")
         self._tabs.currentChanged.connect(self._on_tab_changed)
         root.addWidget(self._tabs)
 
@@ -98,25 +197,51 @@ class ExportWidget(QWidget):
         self._filter_btn.clicked.connect(self._open_filter_dialog)
         btn_row.addWidget(self._filter_btn)
 
-        self._log_btn = QPushButton("Show Log")
-        self._log_btn.setCheckable(True)
-        self._log_btn.setToolTip("Show/hide export history log")
-        self._log_btn.toggled.connect(self._toggle_log)
-        btn_row.addWidget(self._log_btn)
+        self._reset_all_btn = QPushButton("Reset All")
+        self._reset_all_btn.setToolTip(
+            "Reset names, filters, CRS, format overrides, and settings"
+        )
+        self._reset_all_btn.clicked.connect(self._reset_all)
+        btn_row.addWidget(self._reset_all_btn)
 
         self._export_btn = QPushButton("Export")
         self._export_btn.setStyleSheet("font-weight:bold; padding:5px 18px;")
         self._export_btn.clicked.connect(self._do_export)
         btn_row.addWidget(self._export_btn)
 
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.setVisible(False)
+        self._cancel_btn.setStyleSheet(
+            "background:#c0392b; color:white; font-weight:bold; padding:5px 18px;"
+        )
+        self._cancel_btn.clicked.connect(self._cancel_export)
+        btn_row.addWidget(self._cancel_btn)
+
         root.addLayout(btn_row)
+
+    def _build_log_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         self._log_view = QPlainTextEdit()
         self._log_view.setReadOnly(True)
         self._log_view.setMaximumBlockCount(500)
-        self._log_view.setVisible(False)
         self._log_view.setStyleSheet("font-size:8pt; font-family:monospace;")
-        root.addWidget(self._log_view)
+        layout.addWidget(self._log_view)
+
+        log_btn_row = QHBoxLayout()
+        log_btn_row.addStretch()
+        clear_log_btn = QPushButton("Clear Log")
+        clear_log_btn.clicked.connect(self._clear_log)
+        log_btn_row.addWidget(clear_log_btn)
+        layout.addLayout(log_btn_row)
+
+        return tab
+
+    def _clear_log(self) -> None:
+        self._log_view.clear()
+        self._log_entries.clear()
 
     def _build_single_tab(self) -> QWidget:
         tab = QWidget()
@@ -145,24 +270,13 @@ class ExportWidget(QWidget):
         sel_row.addWidget(refresh_btn, 1)
         layout.addLayout(sel_row)
 
-        fmt_group = QGroupBox("Default formats (used when layer format = Default)")
-        fmt_grid = QGridLayout(fmt_group)
-        self._format_checks: Dict[str, QCheckBox] = {}
-        formats = [
-            ("GeoPackage", "GPKG", ".gpkg"),
-            ("Shapefile", "ESRI Shapefile", ".shp"),
-            ("GeoJSON", "GeoJSON", ".geojson"),
-            ("KML", "KML", ".kml"),
-            ("FlatGeobuf", "FlatGeobuf", ".fgb"),
-        ]
-        for idx, (label, driver, _ext) in enumerate(formats):
-            cb = QCheckBox(label)
-            cb.setProperty("driver", driver)
-            cb.stateChanged.connect(self._update_export_button_state)
-            self._format_checks[driver] = cb
-            fmt_grid.addWidget(cb, idx // 3, idx % 3)
-        self._format_checks["GPKG"].setChecked(True)
-        layout.addWidget(fmt_group)
+        self._fmt_row = QHBoxLayout()
+        self._fmt_row.addWidget(QLabel("Formats:"))
+        self._fmt_btn = QPushButton()
+        self._fmt_btn.clicked.connect(self._configure_formats)
+        self._fmt_row.addWidget(self._fmt_btn)
+        self._fmt_row.addStretch()
+        layout.addLayout(self._fmt_row)
 
         out_group = QGroupBox("Output")
         out_layout = QVBoxLayout(out_group)
@@ -189,11 +303,44 @@ class ExportWidget(QWidget):
         style_row.addStretch()
         out_layout.addLayout(style_row)
 
+        naming_row = QHBoxLayout()
+        self._naming_template_edit = QLineEdit()
+        self._naming_template_edit.setPlaceholderText("{layer_name}")
+        self._naming_template_edit.setToolTip(
+            "Placeholders: {layer_name}, {date}, {time}, {crs}, {datetime}"
+        )
+        naming_row.addWidget(QLabel("Name pattern:"))
+        naming_row.addWidget(self._naming_template_edit)
+        hint_btn = QPushButton("?")
+        hint_btn.setFixedWidth(24)
+        hint_btn.setToolTip("Show available placeholders")
+        hint_btn.clicked.connect(self._show_naming_hint)
+        naming_row.addWidget(hint_btn)
+        apply_name_btn = QPushButton("Apply")
+        apply_name_btn.setToolTip(
+            "Apply naming pattern to all export names in the table"
+        )
+        apply_name_btn.clicked.connect(self._apply_naming_template)
+        naming_row.addWidget(apply_name_btn)
+        out_layout.addLayout(naming_row)
+
         self._single_replace_cb = QCheckBox("Replace source in project after export")
         self._single_replace_cb.setToolTip(
             "Repoints the project layer to the new file; display name unchanged"
         )
         out_layout.addWidget(self._single_replace_cb)
+
+        self._single_add_to_project_cb = QCheckBox("Add exported files to project")
+        self._single_add_to_project_cb.setToolTip(
+            "Load exported files as new layers in the project"
+        )
+        out_layout.addWidget(self._single_add_to_project_cb)
+
+        self._single_keep_name_cb = QCheckBox("Keep original layer name")
+        self._single_keep_name_cb.setToolTip(
+            "Use the source layer name instead of the export name when loading"
+        )
+        out_layout.addWidget(self._single_keep_name_cb)
 
         layout.addWidget(out_group)
         return tab
@@ -253,9 +400,33 @@ class ExportWidget(QWidget):
         self._gpkg_replace_cb = QCheckBox("Replace source in project after export")
         opts_grid.addWidget(self._gpkg_replace_cb, 1, 1)
 
+        self._gpkg_preserve_groups_cb = QCheckBox(
+            "Preserve layer groups in table names"
+        )
+        self._gpkg_preserve_groups_cb.setToolTip(
+            "Prefix GPKG table names with the layer tree group path"
+        )
+        opts_grid.addWidget(self._gpkg_preserve_groups_cb, 2, 0)
+
+        self._gpkg_add_to_project_cb = QCheckBox("Add exported layers to project")
+        self._gpkg_add_to_project_cb.setToolTip(
+            "Load exported layers as new layers in the project"
+        )
+        opts_grid.addWidget(self._gpkg_add_to_project_cb, 2, 1)
+
+        self._gpkg_keep_name_cb = QCheckBox("Keep original layer name")
+        self._gpkg_keep_name_cb.setToolTip(
+            "Use the source layer name instead of the export name when loading"
+        )
+        opts_grid.addWidget(self._gpkg_keep_name_cb, 3, 0)
+
         out_layout.addLayout(opts_grid)
         layout.addWidget(out_group)
         return tab
+
+    def _build_project_tab(self) -> QWidget:
+        self._project_tab = ProjectExportTab(self.iface, self)
+        return self._project_tab
 
     def _connect_project_signals(self) -> None:
         self._connections = []
@@ -319,7 +490,11 @@ class ExportWidget(QWidget):
             for lid, authid in self._target_crs.items():
                 table.set_target_crs(lid, authid)
 
+        if hasattr(self, "_project_tab"):
+            self._project_tab._refresh_table()
+
         self._update_layer_count()
+        self._update_single_formats()
         self._update_export_button_state()
 
     def _update_layer_count(self) -> None:
@@ -334,6 +509,51 @@ class ExportWidget(QWidget):
             parts.append(f"{filtered} with filters")
         self._layer_count_label.setText(", ".join(parts))
 
+    def _has_vector_in_table(self) -> bool:
+        for row in range(self._single_table.rowCount()):
+            lid = self._single_table._layer_id_for_row(row)
+            if lid:
+                layer = QgsProject.instance().mapLayer(lid)
+                if isinstance(layer, QgsVectorLayer):
+                    return True
+        return False
+
+    def _has_raster_in_table(self) -> bool:
+        for row in range(self._single_table.rowCount()):
+            lid = self._single_table._layer_id_for_row(row)
+            if lid:
+                layer = QgsProject.instance().mapLayer(lid)
+                if isinstance(layer, QgsRasterLayer):
+                    return True
+        return False
+
+    def _update_single_formats(self) -> None:
+        has_vec = self._has_vector_in_table()
+        has_ras = self._has_raster_in_table()
+        if hasattr(self, "_fmt_btn"):
+            self._fmt_btn.setVisible(has_vec or has_ras)
+
+    def _update_format_button_text(self) -> None:
+        vec = len(self._vector_selected)
+        ras = len(self._raster_selected)
+        parts = []
+        if vec:
+            parts.append(f"{vec} vector")
+        if ras:
+            parts.append(f"{ras} raster")
+        if hasattr(self, "_fmt_btn"):
+            self._fmt_btn.setText(
+                f"Formats ({', '.join(parts)})" if parts else "Configure formats"
+            )
+
+    def _configure_formats(self) -> None:
+        dlg = FormatDialog(self._vector_selected, self._raster_selected, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._vector_selected = dlg.get_vector_selected()
+            self._raster_selected = dlg.get_raster_selected()
+            self._update_format_button_text()
+            self._update_export_button_state()
+
     def _update_export_button_state(self) -> None:
         self._update_layer_count()
         table = self._active_table()
@@ -341,7 +561,9 @@ class ExportWidget(QWidget):
 
         if self._tabs.currentIndex() == 0:
             has_dir = bool(self._single_dir_edit.text().strip())
-            has_format = any(cb.isChecked() for cb in self._format_checks.values())
+            has_vector = bool(self._vector_selected)
+            has_raster = bool(self._raster_selected)
+            has_format = has_vector or has_raster
             can_export = has_selection and has_dir and has_format
         else:
             has_path = bool(self._gpkg_path_edit.text().strip())
@@ -367,6 +589,16 @@ class ExportWidget(QWidget):
         single_replace = s.value("single_replace", False, bool)
         self._single_replace_cb.setChecked(single_replace)
 
+        single_add = s.value("single_add_to_project", False, bool)
+        self._single_add_to_project_cb.setChecked(single_add)
+
+        single_keep = s.value("single_keep_name", False, bool)
+        self._single_keep_name_cb.setChecked(single_keep)
+
+        naming_template = s.value("naming_template", "", str)
+        if naming_template:
+            self._naming_template_edit.setText(naming_template)
+
         gpkg_path = s.value("gpkg_path", "", str)
         if gpkg_path:
             self._gpkg_path_edit.setText(gpkg_path)
@@ -383,17 +615,48 @@ class ExportWidget(QWidget):
         gpkg_replace = s.value("gpkg_replace", False, bool)
         self._gpkg_replace_cb.setChecked(gpkg_replace)
 
-        saved_formats = s.value("single_formats", ["GPKG"])
-        if isinstance(saved_formats, str):
-            saved_formats = [saved_formats]
-        if saved_formats:
-            for driver, cb in self._format_checks.items():
-                cb.setChecked(driver in saved_formats)
+        gpkg_groups = s.value("gpkg_preserve_groups", False, bool)
+        self._gpkg_preserve_groups_cb.setChecked(gpkg_groups)
+
+        gpkg_add = s.value("gpkg_add_to_project", False, bool)
+        self._gpkg_add_to_project_cb.setChecked(gpkg_add)
+
+        gpkg_keep = s.value("gpkg_keep_name", False, bool)
+        self._gpkg_keep_name_cb.setChecked(gpkg_keep)
+
+        saved_vector = s.value("single_vector_formats", None)
+        if saved_vector is not None:
+            if isinstance(saved_vector, str):
+                saved_vector = [saved_vector]
+            self._vector_selected = set(saved_vector)
+        else:
+            saved_old = s.value("single_formats", ["GPKG"])
+            if isinstance(saved_old, str):
+                saved_old = [saved_old]
+            self._vector_selected = set(saved_old)
+
+        saved_raster = s.value("single_raster_formats", ["GTiff"])
+        if isinstance(saved_raster, str):
+            saved_raster = [saved_raster]
+        self._raster_selected = set(saved_raster)
+
+        self._update_format_button_text()
 
         log_text = s.value("log_text", "", str)
         if log_text:
             self._log_view.setPlainText(log_text)
             self._log_entries = log_text.strip().split("\n")
+
+        filters_json = s.value("filters", "{}", str)
+        self._filters = json.loads(filters_json)
+
+        crs_json = s.value("target_crs", "{}", str)
+        self._target_crs = json.loads(crs_json)
+
+        names_json = s.value("export_names", "{}", str)
+        export_names = json.loads(names_json)
+        self._single_table._export_names.update(export_names)
+        self._gpkg_table._export_names.update(export_names)
 
         s.endGroup()
 
@@ -404,23 +667,71 @@ class ExportWidget(QWidget):
         s.setValue("single_dir", self._single_dir_edit.text().strip())
         s.setValue("single_style_idx", self._single_style_combo.currentIndex())
         s.setValue("single_replace", self._single_replace_cb.isChecked())
+        s.setValue("single_add_to_project", self._single_add_to_project_cb.isChecked())
+        s.setValue("single_keep_name", self._single_keep_name_cb.isChecked())
+        s.setValue("naming_template", self._naming_template_edit.text().strip())
         s.setValue("gpkg_path", self._gpkg_path_edit.text().strip())
         s.setValue("gpkg_overwrite", self._gpkg_overwrite_cb.isChecked())
         s.setValue("gpkg_style", self._gpkg_style_cb.isChecked())
         s.setValue("gpkg_embed", self._gpkg_embed_cb.isChecked())
         s.setValue("gpkg_replace", self._gpkg_replace_cb.isChecked())
+        s.setValue("gpkg_preserve_groups", self._gpkg_preserve_groups_cb.isChecked())
+        s.setValue("gpkg_add_to_project", self._gpkg_add_to_project_cb.isChecked())
+        s.setValue("gpkg_keep_name", self._gpkg_keep_name_cb.isChecked())
 
-        checked_formats = [d for d, cb in self._format_checks.items() if cb.isChecked()]
-        s.setValue("single_formats", checked_formats)
+        s.setValue("single_vector_formats", list(self._vector_selected))
+        s.setValue("single_raster_formats", list(self._raster_selected))
 
         s.setValue("log_text", self._log_view.toPlainText())
+
+        s.setValue("filters", json.dumps(self._filters))
+        s.setValue("target_crs", json.dumps(self._target_crs))
+        s.setValue("export_names", json.dumps(self._single_table._export_names))
 
         s.endGroup()
         s.sync()
 
-    def _toggle_log(self, visible: bool) -> None:
-        self._log_view.setVisible(visible)
-        self._log_btn.setText("Hide Log" if visible else "Show Log")
+    def _reset_all(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Reset All",
+            "Reset export names, filters, CRS overrides, and settings to defaults?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._filters.clear()
+        self._target_crs.clear()
+        self._reset_export_names()
+        for table in (self._single_table, self._gpkg_table):
+            for row in range(table.rowCount()):
+                lid = table._layer_id_for_row(row)
+                if lid:
+                    table._format_overrides.pop(lid, None)
+                    combo = table.cellWidget(row, 3)
+                    if combo:
+                        combo.setCurrentIndex(0)
+        self._single_dir_edit.clear()
+        self._naming_template_edit.clear()
+        self._gpkg_path_edit.clear()
+        self._single_style_combo.setCurrentIndex(1)
+        self._single_replace_cb.setChecked(False)
+        self._single_add_to_project_cb.setChecked(False)
+        self._single_keep_name_cb.setChecked(False)
+        self._gpkg_overwrite_cb.setChecked(False)
+        self._gpkg_style_cb.setChecked(False)
+        self._gpkg_embed_cb.setChecked(True)
+        self._gpkg_replace_cb.setChecked(False)
+        self._gpkg_preserve_groups_cb.setChecked(False)
+        self._gpkg_add_to_project_cb.setChecked(False)
+        self._gpkg_keep_name_cb.setChecked(False)
+        self._vector_selected = {"GPKG"}
+        self._raster_selected = {"GTiff"}
+        self._update_format_button_text()
+        self._clear_log()
+        self._log_view.setPlainText("")
+        self._refresh_layers()
+        self._save_settings()
 
     def _on_target_crs_changed(self, layer_id: str, authid: str) -> None:
         self._target_crs[layer_id] = authid
@@ -462,6 +773,114 @@ class ExportWidget(QWidget):
         for table in (self._single_table, self._gpkg_table):
             table.reset_export_names()
 
+    NAMING_PLACEHOLDERS = {
+        "{layer_name}": "Source layer name",
+        "{date}": "Today's date (YYYY-MM-DD)",
+        "{time}": "Current time (HHMMSS)",
+        "{crs}": "Layer CRS auth code (e.g. EPSG:4326)",
+        "{datetime}": "Date + time (YYYY-MM-DD_HHMMSS)",
+    }
+
+    @staticmethod
+    def _resolve_template(template: str, layer_name: str, crs_authid: str) -> str:
+        """Replace placeholders in a naming template with actual values."""
+        from datetime import datetime
+
+        now = datetime.now()
+        result = template
+        result = result.replace("{layer_name}", layer_name)
+        result = result.replace("{date}", now.strftime("%Y-%m-%d"))
+        result = result.replace("{time}", now.strftime("%H%M%S"))
+        result = result.replace("{crs}", crs_authid if crs_authid else "no_crs")
+        result = result.replace("{datetime}", now.strftime("%Y-%m-%d_%H%M%S"))
+        return result
+
+    def _apply_naming_template(self) -> None:
+        """Apply the current naming template to all export names in the single table."""
+        template = self._naming_template_edit.text().strip()
+        if not template:
+            template = "{layer_name}"
+        for row in range(self._single_table.rowCount()):
+            lid = self._single_table._layer_id_for_row(row)
+            if not lid:
+                continue
+            layer = QgsProject.instance().mapLayer(lid)
+            if layer is None:
+                continue
+            src_name = layer.name()
+            crs = layer.crs().authid() if layer.crs().isValid() else ""
+            resolved = self._resolve_template(template, src_name, crs)
+            sanitized = self._sanitize_name(resolved)
+            self._single_table._export_names[lid] = sanitized
+            exp_item = self._single_table.item(row, 2)
+            if exp_item:
+                exp_item.setText(sanitized)
+                self._single_table._apply_export_name_style(
+                    exp_item, sanitized, src_name
+                )
+        self._update_export_button_state()
+
+    def _show_naming_hint(self) -> None:
+        lines = ["Available placeholders:\n"]
+        for placeholder, desc in self.NAMING_PLACEHOLDERS.items():
+            lines.append(f"  {placeholder}  —  {desc}")
+        lines.append("\nExample: export_{layer_name}_{date}")
+        lines.append("Result:   export_roads_2026-05-21")
+        QMessageBox.information(self, "Naming pattern placeholders", "\n".join(lines))
+
+    @staticmethod
+    def _get_group_path(layer_id: str) -> str:
+        """Return the sanitized group path for a layer (e.g. 'transport_roads')."""
+        root = QgsProject.instance().layerTreeRoot()
+        node = root.findLayer(layer_id)
+        if node is None:
+            return ""
+        group_names: list[str] = []
+        parent = node.parent()
+        while parent is not None and parent != root:
+            group_names.append(parent.name())
+            parent = parent.parent()
+        if not group_names:
+            return ""
+        group_names.reverse()
+        clean = []
+        for n in group_names:
+            sanitized = ""
+            for ch in n:
+                sanitized += "_" if ch in r'\/:*?"<>|. ' else ch
+            clean.append(sanitized.lower().strip("_"))
+        return "_".join(filter(None, clean))
+
+    def _cancel_export(self) -> None:
+        worker = getattr(self, "_export_worker", None)
+        if worker is not None:
+            worker.cancel()
+        self._cancel_btn.setEnabled(False)
+
+    def _check_duplicate_names(self, specs: List[ExportSpec]) -> List[ExportSpec]:
+        """Check for duplicate export names in single-file mode. Warn and ask user."""
+        seen: Dict[str, int] = {}
+        dups: List[str] = []
+        for s in specs:
+            if s.target_mode == "single":
+                fname = f"{self._sanitize_name(s.export_name)}{s.file_extension}"
+                if fname in seen:
+                    dups.append(s.export_name)
+                else:
+                    seen[fname] = 1
+        if dups:
+            reply = QMessageBox.warning(
+                self,
+                "Duplicate Export Names",
+                "The following export names will create files with conflicting names:"
+                f"\n{chr(10).join(f'  - {n}' for n in dups)}"
+                "\n\nLater exports will overwrite earlier ones. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return []
+        return specs
+
     def _do_export(self) -> None:
         if self._tabs.currentIndex() == 0:
             self._export_single()
@@ -491,9 +910,9 @@ class ExportWidget(QWidget):
         override = self._single_table.get_format_override(lid)
         if override:
             return [override]
-        fallback = [d for d, cb in self._format_checks.items() if cb.isChecked()]
+        fallback = list(self._raster_selected if is_raster else self._vector_selected)
         if not fallback:
-            return ["GPKG"] if not is_raster else ["GTiff"]
+            return ["GTiff"] if is_raster else ["GPKG"]
         return fallback
 
     def _export_single(self) -> None:
@@ -530,6 +949,7 @@ class ExportWidget(QWidget):
         specs: List[ExportSpec] = []
         skipped: List[str] = []
         for lid, exp_name in checked:
+            safe_name = self._sanitize_name(exp_name)
             layer, target_crs, is_raster, error = self._validate_export_layer(
                 lid, exp_name, self._single_table
             )
@@ -539,37 +959,23 @@ class ExportWidget(QWidget):
 
             drivers = self._get_layer_drivers(lid, is_raster)
             for driver in drivers:
-                if is_raster and driver != "GPKG":
-                    specs.append(
-                        ExportSpec(
-                            source_layer_id=lid,
-                            export_name=exp_name,
-                            target_mode="single",
-                            output_path=out_dir,
-                            driver="GTiff",
-                            filter_expression=self._filters.get(lid, ""),
-                            style_mode=style_mode
-                            if style_mode != StyleMode.EMBED
-                            else StyleMode.QML,
-                            replace_in_project=replace,
-                            target_crs_authid=target_crs,
-                        )
+                em = style_mode
+                if em == StyleMode.EMBED and driver != "GPKG":
+                    em = StyleMode.QML
+                specs.append(
+                    ExportSpec(
+                        source_layer_id=lid,
+                        source_name=layer.name(),
+                        export_name=safe_name,
+                        target_mode="single",
+                        output_path=out_dir,
+                        driver=driver,
+                        filter_expression=self._filters.get(lid, ""),
+                        style_mode=em,
+                        replace_in_project=replace,
+                        target_crs_authid=target_crs,
                     )
-                    break
-                elif not is_raster:
-                    specs.append(
-                        ExportSpec(
-                            source_layer_id=lid,
-                            export_name=exp_name,
-                            target_mode="single",
-                            output_path=out_dir,
-                            driver=driver,
-                            filter_expression=self._filters.get(lid, ""),
-                            style_mode=style_mode,
-                            replace_in_project=replace,
-                            target_crs_authid=target_crs,
-                        )
-                    )
+                )
 
         if skipped:
             QMessageBox.warning(
@@ -580,6 +986,12 @@ class ExportWidget(QWidget):
         if not specs:
             return
 
+        specs = self._check_duplicate_names(specs)
+        if not specs:
+            return
+
+        self._add_exported_layers = self._single_add_to_project_cb.isChecked()
+        self._keep_original_name = self._single_keep_name_cb.isChecked()
         self._run_specs(specs)
 
     def _export_gpkg(self) -> None:
@@ -622,10 +1034,16 @@ class ExportWidget(QWidget):
                 skipped.append(f"{exp_name}: {error}")
                 continue
 
+            safe_name = self._sanitize_name(exp_name)
+            if self._gpkg_preserve_groups_cb.isChecked():
+                group = self._get_group_path(lid)
+                if group:
+                    safe_name = f"{group}_{safe_name}"
             specs.append(
                 ExportSpec(
                     source_layer_id=lid,
-                    export_name=exp_name,
+                    source_name=layer.name(),
+                    export_name=safe_name,
                     target_mode="gpkg",
                     output_path=gpkg_path,
                     driver="GTiff" if is_raster else "GPKG",
@@ -645,41 +1063,87 @@ class ExportWidget(QWidget):
         if not specs:
             return
 
+        self._add_exported_layers = self._gpkg_add_to_project_cb.isChecked()
+        self._keep_original_name = self._gpkg_keep_name_cb.isChecked()
         self._run_specs(specs)
+
+    def _check_overwrite(self, specs: List[ExportSpec]) -> bool:
+        existing: List[str] = []
+        for s in specs:
+            if s.target_mode != "single":
+                continue
+            path = os.path.join(s.output_path, f"{s.export_name}{s.file_extension}")
+            if os.path.exists(path):
+                existing.append(s.export_name)
+        if existing:
+            reply = QMessageBox.question(
+                self,
+                "Overwrite existing files",
+                "The following files already exist and will be overwritten:\n"
+                + "\n".join(f"  - {n}" for n in existing)
+                + "\n\nContinue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            return reply == QMessageBox.StandardButton.Yes
+        return True
 
     def _run_specs(self, specs: List[ExportSpec]) -> None:
         if not specs:
             return
 
+        if not self._check_overwrite(specs):
+            return
+
         self._export_btn.setEnabled(False)
+        self._cancel_btn.setVisible(True)
+        self._cancel_btn.setEnabled(True)
         self._progress.setVisible(True)
-        self._progress.setRange(0, len(specs))
+        self._progress.setRange(0, 100)
         self._progress.setValue(0)
 
-        start_time = time.time()
-        log_lines: List[str] = []
+        self._start_time = time.time()
+        self._specs_count = len(specs)
 
-        def progress_cb(current: int, _total: int, msg: str) -> None:
-            self._progress.setValue(current)
-            self._status.setText(msg)
-            from qgis.PyQt.QtWidgets import QApplication
+        self._export_thread = QThread()
+        self._export_worker = ExportWorker(specs)
+        self._export_worker.moveToThread(self._export_thread)
 
-            QApplication.processEvents()
+        self._export_worker.progress.connect(self._on_worker_progress)
+        self._export_worker.finished.connect(self._on_worker_finished)
+        self._export_thread.started.connect(self._export_worker.run)
+        self._export_worker.finished.connect(self._export_thread.quit)
+        self._export_worker.finished.connect(self._export_worker.deleteLater)
+        self._export_thread.finished.connect(self._export_thread.deleteLater)
 
-        results: List[ExportResult] = self._engine.run(specs, progress_cb=progress_cb)
+        self._export_thread.start()
 
-        elapsed = time.time() - start_time
+    def _on_worker_progress(self, current: int, total: int, msg: str) -> None:
+        pct = int((100.0 * current) / total) if total > 1 else 0
+        self._progress.setValue(pct)
+        self._status.setText(msg)
+
+    def _on_worker_finished(self, results: List[ExportResult]) -> None:
+        elapsed = time.time() - self._start_time
+        was_cancelled = self._export_worker.was_cancelled
         self._progress.setVisible(False)
+        self._cancel_btn.setVisible(False)
         self._export_btn.setEnabled(True)
         self._status.setText("")
 
+        log_lines: List[str] = []
         ok = sum(1 for r in results if r.success)
         fail = [r for r in results if not r.success]
 
-        log_lines.append(
-            f"[{time.strftime('%H:%M:%S')}] Export session: "
-            f"{ok} ok, {len(fail)} failed ({elapsed:.1f}s)"
-        )
+        if was_cancelled:
+            log_lines.append(
+                f"[{time.strftime('%H:%M:%S')}] Export cancelled "
+                f"({ok} ok, {len(fail)} failed, {elapsed:.1f}s)"
+            )
+        else:
+            log_lines.append(
+                f"[{time.strftime('%H:%M:%S')}] Export session: "
+                f"{ok} ok, {len(fail)} failed ({elapsed:.1f}s)"
+            )
         for r in results:
             if r.success:
                 fcount = r.features_written if r.features_written else "?"
@@ -692,10 +1156,13 @@ class ExportWidget(QWidget):
         self._log_entries.extend(log_lines)
         self._log_view.appendPlainText("\n".join(log_lines))
 
-        if not self._log_view.isVisible():
-            self._log_view.setVisible(True)
-            self._log_btn.setChecked(True)
-            self._log_btn.setText("Hide Log")
+        if fail or was_cancelled:
+            self._tabs.setCurrentIndex(2)
+
+        if getattr(self, "_add_exported_layers", False):
+            for r in results:
+                if r.success:
+                    self._add_result_to_project(r)
 
         if fail:
             QMessageBox.warning(
@@ -704,12 +1171,32 @@ class ExportWidget(QWidget):
                 f"{ok} succeeded, {len(fail)} failed:\n"
                 + "\n".join(f"- {r.spec.export_name}: {r.error}" for r in fail),
             )
-        else:
+        elif not was_cancelled:
             QMessageBox.information(
                 self, "Export complete", f"Successfully exported {ok} layer(s)."
             )
 
         self._save_settings()
+
+    def _add_result_to_project(self, result: ExportResult) -> None:
+        """Load a successful export result as a new layer in the project."""
+        spec = result.spec
+        path = result.output_path
+        name = (
+            spec.source_name
+            if getattr(self, "_keep_original_name", False)
+            else spec.export_name
+        )
+        if spec.driver in ("GTiff", "PNG", "JPEG", "JPEG2000", "WEBP", "BMP", "HFA"):
+            layer = QgsRasterLayer(path, name)
+        elif spec.target_mode == "gpkg" and spec.is_raster_driver:
+            layer = QgsRasterLayer(f"{path}|layername={name}", name)
+        elif spec.target_mode == "gpkg":
+            layer = QgsVectorLayer(f"{path}|layername={name}", name, "ogr")
+        else:
+            layer = QgsVectorLayer(path, name, "ogr")
+        if layer and layer.isValid():
+            QgsProject.instance().addMapLayer(layer)
 
     def set_active_layer(self, layer) -> None:
         """Select and scroll to a specific layer in both tables."""
@@ -732,6 +1219,7 @@ class ExportWidget(QWidget):
             self._gpkg_path_edit.setText(path)
 
     def _active_table(self) -> LayerTableWidget:
-        return (
-            self._single_table if self._tabs.currentIndex() == 0 else self._gpkg_table
-        )
+        if self._tabs.currentIndex() == 0:
+            return self._single_table
+        gpkg = getattr(self, "_gpkg_table", None)
+        return gpkg if gpkg is not None else self._single_table

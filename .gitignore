@@ -93,3 +93,4 @@ resources.py
 resources.qrc
 ui_*.py
 *.ui
+/.opencode/
