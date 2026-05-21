@@ -112,16 +112,14 @@ class LayerTableWidget(QTableWidget):
         headers = ["", "Source Name", "Export Name", "Format", "Filter", "CRS"]
         self.setHorizontalHeaderLabels(headers)
         hh = self.horizontalHeader()
+        hh.setStyleSheet("font-weight:bold;")
         hh.setSectionResizeMode(COL_TYPE, QHeaderView.ResizeMode.Fixed)
-        hh.setSectionResizeMode(COL_SOURCE, QHeaderView.ResizeMode.Interactive)
-        hh.setSectionResizeMode(COL_EXPORT, QHeaderView.ResizeMode.Interactive)
+        hh.setSectionResizeMode(COL_SOURCE, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(COL_EXPORT, QHeaderView.ResizeMode.Stretch)
         hh.setSectionResizeMode(COL_FORMAT, QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(COL_FILTER, QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(COL_CRS, QHeaderView.ResizeMode.Fixed)
-        hh.setStretchLastSection(False)
         self.setColumnWidth(COL_TYPE, 34)
-        self.setColumnWidth(COL_SOURCE, 180)
-        self.setColumnWidth(COL_EXPORT, 180)
         self.setColumnWidth(COL_FORMAT, 90 if self._show_format else 0)
         self.setColumnWidth(COL_FILTER, 64)
         self.setColumnWidth(COL_CRS, 82)
@@ -235,7 +233,11 @@ class LayerTableWidget(QTableWidget):
             default_crs = layer.crs().authid() if layer.crs().isValid() else ""
             target_crs = self._target_crs.get(layer.id(), default_crs)
             crs_item = QTableWidgetItem(target_crs)
-            crs_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            crs_item.setFlags(
+                Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsSelectable
+                | Qt.ItemFlag.ItemIsEditable
+            )
             crs_item.setData(Qt.ItemDataRole.UserRole, layer.id())
             self._apply_crs_style(crs_item)
             self.setItem(row, COL_CRS, crs_item)
@@ -436,7 +438,7 @@ class LayerTableWidget(QTableWidget):
             selected = dlg.crs()
             if not selected.isValid():
                 return
-            authid = selected.authid() or selected.toOgcWmsCrs()
+            authid = selected.authid()
             self._target_crs[layer_id] = authid
             if crs_item:
                 self.blockSignals(True)

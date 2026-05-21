@@ -24,7 +24,6 @@ from qgis.core import (
     QgsRasterLayer,
     QgsRasterPipe,
     QgsRasterProjector,
-    QgsRenderContext,
     QgsVectorFileWriter,
     QgsVectorLayer,
     QgsWkbTypes,
@@ -45,33 +44,8 @@ logger = logging.getLogger("DockExport.ExportEngine")
 
 def layer_export_block_reason(layer: QgsMapLayer) -> str:
     """Return reason string if layer cannot be exported, empty string if OK."""
-    if isinstance(layer, QgsRasterLayer):
-        provider = (layer.providerType() or "").lower()
-        source = (layer.source() or "").lower()
-        remote_prefixes = (
-            "context:",
-            "wms:",
-            "wmts:",
-            "xyz:",
-            "http://",
-            "https://",
-        )
-        is_remote = (
-            provider in {"wms", "arcgismapserver", "wcs"}
-            or source.startswith(remote_prefixes)
-            or "type=wmts" in source
-            or "type=xyz" in source
-        )
-        if is_remote:
-            return (
-                "Linked web raster layers (WMS/WMTS/XYZ/WCS/HTTP sources) "
-                "are not directly exportable."
-            )
+    if isinstance(layer, (QgsRasterLayer, QgsVectorLayer)):
         return ""
-
-    if isinstance(layer, QgsVectorLayer):
-        return ""
-
     return "This layer type is not supported by the exporter."
 
 

@@ -8,7 +8,6 @@ from __future__ import annotations
 import logging
 import os
 
-from qgis.PyQt.QtXml import QDomDocument
 from qgis.core import QgsProject
 
 from .woof_format import extract_woof_to_directory

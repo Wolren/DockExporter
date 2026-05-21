@@ -32,12 +32,6 @@ from typing import Dict, List, Tuple
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from dock_export.woof_format import (
-    HEADER_SIZE,
-    WOOF_MAGIC,
-    FLAG_XOR,
-    FLAG_HAS_CHUNK_STORE,
-    FLAG_ENTRY_CHUNKED,
-    _xor,
     pack_woof,
     unpack_woof,
 )
@@ -113,8 +107,8 @@ def _bar(val: float, max_val: float, width: int = 20) -> str:
 _MODE_LABELS = {
     ("v1", False): "v1 (zlib, no compress)",
     ("v1", True): "v1 (zlib, compress)",
-    ("v2", False): "v2 (zstd+CDC, no compress)",
-    ("v2", True): "v2 (zstd+CDC, compress)",
+    ("v2", False): "woof (no compress)",
+    ("v2", True): "woof (compress)",
     ("zip", False): "ZIP (store)",
     ("zip", True): "ZIP (deflate)",
     ("rar", False): "RAR (store)",
@@ -309,59 +303,7 @@ def _bench_one(
     )
     meta["unpack_memory_kb"] = peak_unpack // 1024
 
-    # Parse payload for chunk/file stats (woof modes only)
-    meta["num_chunks"] = 0
-    meta["file_entries"] = 0
-    if mode in ("v1", "v2"):
-        try:
-            import struct as _struct
-
-            _magic, _ver, hdr_flags, xor_size, _raw_total = _struct.unpack(
-                "<4sIQQQ", packed[:HEADER_SIZE]
-            )
-            payload = packed[HEADER_SIZE : HEADER_SIZE + xor_size]
-            if hdr_flags & FLAG_XOR:
-                payload = _xor(payload)
-
-            pos = 0
-            if hdr_flags & FLAG_HAS_CHUNK_STORE:
-                (num_chunks,) = _struct.unpack_from("<Q", payload, pos)
-                meta["num_chunks"] = num_chunks
-                pos += 8
-                unique_sizes = []
-                for _ in range(num_chunks):
-                    pos += 32
-                    comp_size, rsize = _struct.unpack_from("<QQ", payload, pos)
-                    pos += 16
-                    unique_sizes.append(rsize)
-                    pos += comp_size
-                meta["unique_chunks"] = num_chunks
-                meta["dedup_total_raw"] = sum(unique_sizes)
-                meta["avg_chunk_size"] = (
-                    round(sum(unique_sizes) / num_chunks, 1) if num_chunks > 0 else 0
-                )
-            else:
-                meta["unique_chunks"] = 0
-                meta["dedup_total_raw"] = 0
-                meta["avg_chunk_size"] = 0
-
-            ftable = payload[pos:]
-            num_entries = 0
-            fp = 0
-            while fp < len(ftable):
-                num_entries += 1
-                _flags, name_len = _struct.unpack_from("<II", ftable, fp)
-                fp += 8 + name_len
-                if _flags & FLAG_ENTRY_CHUNKED:
-                    num_hashes, _tt = _struct.unpack_from("<II", ftable, fp)
-                    fp += 8 + num_hashes * 32
-                else:
-                    (data_len,) = _struct.unpack_from("<Q", ftable, fp)
-                    fp += 8 + data_len
-            meta["file_entries"] = num_entries
-
-        except Exception as exc:
-            meta["parse_error"] = str(exc)
+    meta["file_entries"] = len(entries)
 
     if _rar_tmp is not None:
         shutil.rmtree(_rar_tmp, ignore_errors=True)
@@ -392,11 +334,10 @@ def _build_live_table(
     table.add_column("Speed", style="magenta", justify="right")
     table.add_column("Mem(P)", justify="right")
     table.add_column("Mem(U)", justify="right")
-    table.add_column("Chunks", justify="right")
 
     for scenario, mode_label, m in completed:
         if m.get("error"):
-            table.add_row(mode_label, "[red]FAILED[/red]", "", "", "", "", "", "", "")
+            table.add_row(mode_label, "[red]FAILED[/red]", "", "", "", "", "", "")
         else:
             table.add_row(
                 mode_label,
@@ -407,7 +348,6 @@ def _build_live_table(
                 f"{m['pack_speed_mbps']:.1f}/{m['unpack_speed_mbps']:.1f} MB/s",
                 _human_bytes(m["pack_memory_kb"] * 1024),
                 _human_bytes(m["unpack_memory_kb"] * 1024),
-                str(m.get("num_chunks", "?")),
             )
 
     if current_label:
@@ -532,10 +472,7 @@ def _plain_print_result(m: Metrics, failed: bool = False) -> None:
     unpack_t = _human_time(m["unpack_time"])
     arch = _human_bytes(m["archive_size"])
     mem = _human_bytes(m["pack_memory_kb"] * 1024)
-    num_c = m.get("num_chunks", "?")
-    print(
-        f"OK {arch}  ratio={ratio:.2f}x  {pack_t}/{unpack_t}  mem={mem}  chunks={num_c}"
-    )
+    print(f"OK {arch}  ratio={ratio:.2f}x  {pack_t}/{unpack_t}  mem={mem}")
 
 
 # ── Report generation ────────────────────────────────────────────
@@ -551,12 +488,6 @@ def _build_report(
     lines.append("# .woof Compressor Benchmark Report")
     lines.append(f"\nGenerated: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append(f"\nPython: {sys.version}")
-    try:
-        import zstandard
-
-        lines.append(f"zstandard: {zstandard.__version__}")
-    except ImportError:
-        lines.append("zstandard: NOT AVAILABLE")
     lines.append(f"\nTotal scenarios: {len(scenario_order)}")
     lines.append(
         f"Total benchmark configurations: {sum(len(v) for v in all_metrics.values())}"
@@ -583,7 +514,6 @@ def _build_report(
             ("Speed(P/U)", 22),
             ("Mem(P)", 10),
             ("Mem(U)", 10),
-            ("Chunks", 8),
         ]
         headers = [c[0] for c in cols]
         widths = [c[1] for c in cols]
@@ -613,7 +543,6 @@ def _build_report(
                 f"{m['pack_speed_mbps']:.1f} / {m['unpack_speed_mbps']:.1f} MB/s",
                 _human_bytes(m["pack_memory_kb"] * 1024),
                 _human_bytes(m["unpack_memory_kb"] * 1024),
-                str(m.get("num_chunks", "?")),
             ]
             lines.append(_fmt_row([label] + row, widths))
 
@@ -716,7 +645,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--no-v1",
         action="store_true",
-        help="Skip v1 (zlib) modes — avoids freeze on large real_data",
+        help="Skip v1 (zlib) modes and zip deflate",
+    )
+    parser.add_argument(
+        "--no-rar",
+        action="store_true",
+        help="Skip rar modes",
     )
     parser.add_argument(
         "--iterations",
@@ -836,6 +770,9 @@ def main() -> None:
             m for m in all_modes if m[0] != "v1" and not (m[0] == "zip" and m[1])
         ]
 
+    if args.no_rar:
+        all_modes = [m for m in all_modes if m[0] != "rar"]
+
     if not all_modes:
         print("No matching modes found.")
         sys.exit(1)
@@ -891,7 +828,6 @@ def main() -> None:
                             "unpack_speed_mbps": 0,
                             "pack_memory_kb": 0,
                             "unpack_memory_kb": 0,
-                            "num_chunks": 0,
                         }
                     )
                     _plain_print_result({"error": str(e)}, failed=True)
@@ -1023,7 +959,6 @@ def main() -> None:
                         "unpack_speed_mbps": 0,
                         "pack_memory_kb": 0,
                         "unpack_memory_kb": 0,
-                        "num_chunks": 0,
                         "entries": 0,
                         "raw_size": 0,
                     }

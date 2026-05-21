@@ -1010,6 +1010,7 @@ class ExportWidget(QWidget):
             return
         if not gpkg_path.lower().endswith(".gpkg"):
             gpkg_path += ".gpkg"
+            self._gpkg_path_edit.setText(gpkg_path)
 
         if self._gpkg_overwrite_cb.isChecked() and os.path.exists(gpkg_path):
             try:
@@ -1120,7 +1121,7 @@ class ExportWidget(QWidget):
         self._export_thread.start()
 
     def _on_worker_progress(self, current: int, total: int, msg: str) -> None:
-        pct = int((100.0 * current) / total) if total > 1 else 0
+        pct = int((100.0 * current) / total) if total else 100
         self._progress.setValue(pct)
         self._status.setText(msg)
 
@@ -1148,7 +1149,7 @@ class ExportWidget(QWidget):
             )
         for r in results:
             if r.success:
-                fcount = r.features_written if r.features_written else "?"
+                fcount = r.features_written if r.features_written is not None else "?"
                 log_lines.append(
                     f"  OK  {r.spec.export_name} -> {r.output_path} ({fcount} features)"
                 )
@@ -1189,7 +1190,7 @@ class ExportWidget(QWidget):
             if getattr(self, "_keep_original_name", False)
             else spec.export_name
         )
-        if spec.driver in ("GTiff", "PNG", "JPEG", "JPEG2000", "WEBP", "BMP", "HFA"):
+        if spec.is_raster_driver:
             layer = QgsRasterLayer(path, name)
         elif spec.target_mode == "gpkg" and spec.is_raster_driver:
             layer = QgsRasterLayer(f"{path}|layername={name}", name)
@@ -1202,7 +1203,7 @@ class ExportWidget(QWidget):
 
     def set_active_layer(self, layer) -> None:
         """Select and scroll to a specific layer in both tables."""
-        self._tabs.setCurrentIndex(1)
+        self._tabs.setCurrentIndex(0)
         self._single_table.set_active_layer(layer)
         self._gpkg_table.set_active_layer(layer)
 

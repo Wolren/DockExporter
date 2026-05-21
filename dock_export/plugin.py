@@ -28,12 +28,24 @@ class DockExportPlugin:
         self.iface.addToolBarIcon(self._action)
         self.iface.addPluginToMenu("&Dock Export", self._action)
 
-        # Add "Open .woof Project..." action
+        # Add "Open .woof Project..." to Project → Open From
         self._open_woof_action = QAction(
             "Open .woof Project...", self.iface.mainWindow()
         )
         self._open_woof_action.triggered.connect(self._on_open_woof)
-        self.iface.addPluginToMenu("&Dock Export", self._open_woof_action)
+        self._open_woof_parent = None
+        project_menu = self.iface.projectMenu()
+        if project_menu:
+            for action in project_menu.actions():
+                sub = action.menu()
+                if sub and "open" in action.text().lower():
+                    sub.addAction(self._open_woof_action)
+                    self._open_woof_parent = sub
+                    break
+            if self._open_woof_parent is None:
+                project_menu.addSeparator()
+                project_menu.addAction(self._open_woof_action)
+                self._open_woof_parent = project_menu
 
         self.layer_tree_view = self.iface.layerTreeView()
         if self.layer_tree_view:
@@ -50,8 +62,8 @@ class DockExportPlugin:
         """Remove toolbar icon, menu entries, dock widget, and disconnect signals."""
         self.iface.removeToolBarIcon(self._action)
         self.iface.removePluginMenu("&Dock Export", self._action)
-        if self._open_woof_action:
-            self.iface.removePluginMenu("&Dock Export", self._open_woof_action)
+        if self._open_woof_action and self._open_woof_parent:
+            self._open_woof_parent.removeAction(self._open_woof_action)
         if self._dock:
             self.iface.removeDockWidget(self._dock)
             self._dock.deleteLater()

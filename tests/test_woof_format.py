@@ -1,7 +1,6 @@
 """Comprehensive tests for dock_export.woof_format.
 
-Covers: CDC chunking, ChunkStore dedup, v1/v2 roundtrips,
-compatibility, edge cases, error handling, and directory packing."""
+Covers: v1/v2 roundtrips, compatibility, edge cases, error handling, and directory packing."""
 
 from __future__ import annotations
 
@@ -17,15 +16,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from dock_export.woof_format import (
     HEADER_SIZE,
-    HASH_SIZE,
     WOOF_MAGIC,
     WOOF_VERSION_V1,
     WOOF_VERSION_V2,
     FLAG_XOR,
-    FLAG_HAS_CHUNK_STORE,
-    FLAG_ENTRY_CHUNKED,
-    _ChunkStore,
-    _chunk_data,
     _is_compressible,
     _xor,
     extract_woof_to_directory,
@@ -90,9 +84,6 @@ class TestWoofConstants:
     def test_header_size(self):
         assert HEADER_SIZE == 32
 
-    def test_hash_size(self):
-        assert HASH_SIZE in (16, 32)  # xxh128 if available, sha256 fallback
-
 
 class TestXor:
     def test_xor_roundtrip(self):
@@ -133,100 +124,6 @@ class TestIsCompressible:
 
     def test_path_normalization(self):
         assert _is_compressible("data/POINTS.GeoJSON")  # case-insensitive match
-
-
-class TestChunkData:
-    MIN = 4096
-    AVG = 16384
-    MAX = 65536
-
-    def test_small_data_not_chunked(self):
-        data = b"x" * 100
-        chunks = _chunk_data(data)
-        assert len(chunks) == 1
-        assert chunks[0] == data
-
-    def test_medium_data_few_chunks(self):
-        data = b"a" * 20000
-        chunks = _chunk_data(data)
-        assert 1 <= len(chunks) <= 4
-
-    def test_large_data_many_chunks(self):
-        data = b"abcdefgh" * 20000  # ~160KB
-        chunks = _chunk_data(data)
-        assert len(chunks) >= 2
-
-    def test_no_chunk_smaller_than_min(self):
-        data = b"x" * 50000
-        chunks = _chunk_data(data)
-        for c in chunks:
-            assert len(c) >= self.MIN or len(c) <= self.AVG, (
-                f"chunk too small: {len(c)} < {self.MIN}"
-            )
-
-    def test_no_chunk_larger_than_max(self):
-        data = bytes(range(256)) * 500  # 128KB
-        chunks = _chunk_data(data)
-        for c in chunks:
-            assert len(c) <= self.MAX + self.AVG, (
-                f"chunk too large: {len(c)} > {self.MAX}"
-            )
-
-    def test_concat_chunks_reproduces_original(self):
-        data = os.urandom(50000)
-        chunks = _chunk_data(data)
-        assert b"".join(chunks) == data
-
-    def test_empty_data(self):
-        assert _chunk_data(b"") == []
-
-    def test_reproducible(self):
-        data = b"hello world, this is test data for chunking " * 1000
-        c1 = _chunk_data(data)
-        c2 = _chunk_data(data)
-        assert c1 == c2  # deterministic
-
-
-class TestChunkStore:
-    def test_add_and_get(self):
-        store = _ChunkStore()
-        h = store.add(b"hello world")
-        assert len(h) == HASH_SIZE
-        assert store.get(h) == b"hello world"
-
-    def test_dedup(self):
-        store = _ChunkStore()
-        h1 = store.add(b"same content")
-        h2 = store.add(b"same content")
-        assert h1 == h2
-        assert len(store._order) == 1  # stored once
-
-    def test_unique_content(self):
-        store = _ChunkStore()
-        h1 = store.add(b"content one")
-        h2 = store.add(b"content two")
-        assert h1 != h2
-        assert len(store._order) == 2
-
-    def test_serialize_empty(self):
-        store = _ChunkStore()
-        data = store.serialize()
-        assert len(data) == 8  # just num_chunks = 0
-
-    def test_serialize_deserialize(self):
-        store = _ChunkStore()
-        store.add(b"alpha")
-        store.add(b"beta")
-        store.add(b"gamma")
-        data = store.serialize()
-        store2 = _ChunkStore.deserialize(data)
-        assert len(store2._order) == 3
-        for h in store._order:
-            assert store.get(h) == store2.get(h)
-
-    def test_deserialize_invalid(self):
-        with pytest.raises(Exception):
-            _ChunkStore.deserialize(b"\xff" * 8)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -277,12 +174,11 @@ class TestPackUnpackV2:
         magic, ver, flags, _xor_sz, _raw = _parse_header(packed)
         assert magic == WOOF_MAGIC
         assert ver == WOOF_VERSION_V2
-        # Small compressible files use inline zstd (no chunk store),
-        # larger files produce a chunk store — both are valid
-        assert flags & ~FLAG_HAS_CHUNK_STORE == 0
+        # No flags set in current v2 archives
+        assert flags == 0
 
-    def test_chunk_dedup_works(self):
-        """Identical text files should share chunks."""
+    def test_identical_files_roundtrip(self):
+        """Identical files roundtrip correctly through pack/unpack."""
         entries = {
             "a.qgs": generate_qgs_project(num_layers=2).encode("utf-8"),
             "b.qgs": generate_qgs_project(num_layers=2).encode("utf-8"),
@@ -290,14 +186,6 @@ class TestPackUnpackV2:
         packed = pack_woof(entries, compress=True, use_v2=True)
         unpacked = unpack_woof(packed)
         assert unpacked == entries
-        # The chunk store should have deduplicated (if files exceed inline zstd threshold)
-        magic, ver, flags, _xor_sz, _raw = _parse_header(packed)
-        if flags & FLAG_HAS_CHUNK_STORE:
-            payload = _payload(packed)
-            store = _ChunkStore.deserialize(payload)
-            total_raw = sum(store._raw_sizes.values())
-            total_comp = sum(len(c) for c in store._chunks.values())
-            assert total_comp <= total_raw
 
     def test_binary_passthrough(self):
         """Binary files should be stored inline without chunking."""
