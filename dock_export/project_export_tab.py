@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtWidgets import (
     QButtonGroup,
+    QComboBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -39,7 +40,7 @@ from qgis.core import (
 )
 
 from .export_engine import layer_export_block_reason
-from .woof_format import pack_woof_to_file
+from .woof import pack_woof_to_file, pack_woof, unpack_woof
 
 logger = logging.getLogger("DockExport.ProjectExport")
 
@@ -199,6 +200,7 @@ class ProjectExportTab(QWidget):
         super().__init__(parent)
         self.iface = iface
         self._mode = "woof"  # "woof" or "zip"
+        self._compression = 1  # 0=None 1=Normal 2=Heavy
         self._build_ui()
         self._refresh_table()
 
@@ -235,6 +237,15 @@ class ProjectExportTab(QWidget):
         mode_layout.addWidget(self._zip_rb)
         mode_layout.addStretch()
         layout.addWidget(mode_group)
+
+        # Compression level (woof only)
+        self._compress_combo = QComboBox()
+        self._compress_combo.addItems(
+            ["No compression", "Normal compression", "Heavy compression"]
+        )
+        self._compress_combo.setCurrentIndex(1)  # Normal
+        self._compress_combo.currentIndexChanged.connect(self._on_compress_changed)
+        layout.addWidget(self._compress_combo)
 
         # Output group (shared)
         out_group = QGroupBox("Output")
@@ -275,8 +286,16 @@ class ProjectExportTab(QWidget):
         self._sync_ui_to_mode()
         self._path_edit.clear()
 
+    def _on_compress_changed(self, idx: int) -> None:
+        self._compression = idx
+
+    def _compress_level(self) -> int:
+        """Return zstd compression level from UI selection. 0 means no compression."""
+        return {0: 0, 1: 3, 2: 9}.get(self._compression, 3)
+
     def _sync_ui_to_mode(self) -> None:
         is_woof = self._mode == "woof"
+        self._compress_combo.setVisible(is_woof)
         self._path_edit.setPlaceholderText(
             "Select .woof output path..." if is_woof else "Select .zip output path..."
         )
@@ -515,7 +534,8 @@ class ProjectExportTab(QWidget):
         all_files, path_map, tmpdir, errors, remote_names = result
 
         self._info_label.setText("Creating .woof archive...")
-        self._progress.setValue(90)
+        self._progress.setMaximum(0)  # indeterminate while preparing
+        QgsApplication.processEvents()
 
         try:
 
@@ -530,7 +550,20 @@ class ProjectExportTab(QWidget):
                         with open(filepath, "rb") as f:
                             yield arcname, f.read()
 
-            pack_woof_to_file(woof_path, _iter_entries(), compress=True)
+            def _on_progress(current, total):
+                if total > 0:
+                    self._progress.setMaximum(100)
+                    self._progress.setValue(int(100.0 * current / total))
+                QgsApplication.processEvents()
+
+            level = self._compress_level()
+            pack_woof_to_file(
+                woof_path,
+                _iter_entries(),
+                compress=level > 0,
+                level=level or 3,
+                progress_cb=_on_progress,
+            )
         except Exception as exc:
             errors.append(f"Failed to create .woof: {exc}")
         finally:
@@ -545,17 +578,24 @@ class ProjectExportTab(QWidget):
         all_files, path_map, tmpdir, errors, remote_names = result
 
         self._info_label.setText("Creating ZIP archive...")
-        self._progress.setValue(90)
+        self._progress.setMaximum(0)
+        QgsApplication.processEvents()
 
         try:
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                 qgs = os.path.join(tmpdir, "project.qgs")
                 zf.write(qgs, "project.qgs")
-                for filepath in all_files:
+                total = len(all_files) + 1
+                self._progress.setMaximum(100)
+                self._progress.setValue(int(100.0 / total))
+                QgsApplication.processEvents()
+                for i, filepath in enumerate(all_files):
                     norm = os.path.normpath(filepath)
                     arcname = path_map.get(norm)
                     if arcname:
                         zf.write(filepath, arcname)
+                    self._progress.setValue(int(100.0 * (i + 2) / total))
+                    QgsApplication.processEvents()
         except Exception as exc:
             errors.append(f"Failed to create ZIP: {exc}")
         finally:

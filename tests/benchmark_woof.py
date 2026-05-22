@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Comprehensive benchmark suite for .woof compressor with real-time rich display.
 
-Measures every aspect of archiving performance across all modes (v1/v2/ZIP)
+Measures every aspect of archiving performance across all modes (woof/python/ZIP)
 and scenarios (tiny / small / standard / text-heavy / binary-heavy / mixed).
 
 Usage:
@@ -9,7 +9,7 @@ Usage:
     python tests/benchmark_woof.py --scenario standard        # single scenario
     python tests/benchmark_woof.py --mode v2                  # single mode
     python tests/benchmark_woof.py --iterations 5             # more iterations
-    python tests/benchmark_woof.py --output report.md         # save report
+    python tests/benchmark_woof.py --output tests/report.md   # save report
     python tests/benchmark_woof.py --quick                    # tiny only, 1 iter
     python tests/benchmark_woof.py --no-live                  # plain text (non-rich)
 """
@@ -31,10 +31,19 @@ from typing import Dict, List, Tuple
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from dock_export.woof_format import (
-    pack_woof,
-    unpack_woof,
+from dock_export.woof_python import (
+    pack_woof as pack_woof_python,
+    unpack_woof as unpack_woof_python,
 )
+
+try:
+    import native_woof_impl
+
+    _HAVE_NATIVE = True
+except ImportError:
+    native_woof_impl = None  # type: ignore
+    _HAVE_NATIVE = False
+
 from tests.test_data_gen import (
     get_scenario_registry,
     make_standard_test_set,
@@ -105,14 +114,14 @@ def _bar(val: float, max_val: float, width: int = 20) -> str:
 # ── Mode definitions ─────────────────────────────────────────────
 
 _MODE_LABELS = {
-    ("v1", False): "v1 (zlib, no compress)",
-    ("v1", True): "v1 (zlib, compress)",
-    ("v2", False): "woof (no compress)",
-    ("v2", True): "woof (compress)",
+    ("v2", False): "woof-python (no compress)",
+    ("v2", True): "woof-python (compress)",
     ("zip", False): "ZIP (store)",
     ("zip", True): "ZIP (deflate)",
     ("rar", False): "RAR (store)",
     ("rar", True): "RAR (compress)",
+    ("native", False): "woof (no compress)",
+    ("native", True): "woof (compress)",
 }
 
 _RAR_PATH: str | None = None
@@ -135,15 +144,13 @@ def _mode_key(mode: str, compress: bool):
 
 def _modes_to_benchmark(quick: bool = False) -> List[Tuple[str, bool]]:
     modes = [
-        ("v1", False),
-        ("v1", True),
         ("v2", False),
         ("v2", True),
         ("zip", False),
         ("zip", True),
     ]
-    if _HAVE_RAR:
-        modes += [("rar", False), ("rar", True)]
+    if _HAVE_NATIVE:
+        modes += [("native", False), ("native", True)]
     if quick:
         modes = [m for m in modes if m[1]]
     return modes
@@ -239,14 +246,13 @@ def _bench_one(
                     with open(full, "rb") as f:
                         result[rel] = f.read()
             return result
+    elif mode == "native":
+        _pack = lambda e: native_woof_impl.pack_v3_py(e, compress, 3)
+        _unpack = native_woof_impl.unpack_v3_py
     else:
         kwargs: dict = {"compress": compress}
-        if mode == "v1":
-            kwargs["use_v2"] = False
-        elif mode == "v2":
-            kwargs["use_v2"] = True
-        _pack = lambda e: pack_woof(e, **kwargs)
-        _unpack = unpack_woof
+        _pack = lambda e: pack_woof_python(e, **kwargs)
+        _unpack = unpack_woof_python
 
     for _ in range(warmup):
         _ = _pack(entries)
@@ -638,14 +644,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mode",
-        choices=["all", "v1", "v2", "zip", "rar"],
+        choices=["all", "v2", "zip", "rar", "native"],
         default="all",
         help="Which compression mode to test (default: all)",
-    )
-    parser.add_argument(
-        "--no-v1",
-        action="store_true",
-        help="Skip v1 (zlib) modes and zip deflate",
     )
     parser.add_argument(
         "--no-rar",
@@ -668,7 +669,7 @@ def parse_args() -> argparse.Namespace:
         "--output",
         type=str,
         default=None,
-        help="Write report to file (e.g. benchmark_report.md)",
+        help="Write report to file (default: tests/benchmark_report.md)",
     )
     parser.add_argument(
         "--quick",
@@ -756,19 +757,8 @@ def main() -> None:
         sys.exit(1)
 
     all_modes = _modes_to_benchmark(args.quick)
-    if args.mode == "v1":
-        all_modes = [m for m in all_modes if m[0] == "v1"]
-    elif args.mode == "v2":
-        all_modes = [m for m in all_modes if m[0] == "v2"]
-    elif args.mode == "zip":
-        all_modes = [m for m in all_modes if m[0] == "zip"]
-    elif args.mode == "rar":
-        all_modes = [m for m in all_modes if m[0] == "rar"]
-
-    if args.no_v1:
-        all_modes = [
-            m for m in all_modes if m[0] != "v1" and not (m[0] == "zip" and m[1])
-        ]
+    if args.mode != "all":
+        all_modes = [m for m in all_modes if m[0] == args.mode]
 
     if args.no_rar:
         all_modes = [m for m in all_modes if m[0] != "rar"]
@@ -1008,7 +998,7 @@ def main() -> None:
         html_path = (
             args.output.replace(".md", ".html")
             if args.output
-            else "benchmark_report.html"
+            else "tests/benchmark_report.html"
         )
         from rich.console import Console as RichConsole
 

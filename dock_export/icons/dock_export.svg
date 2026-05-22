@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <!-- Bottom (green) -->
+  <rect x="2" y="15" width="18" height="6" rx="1.5" fill="#6bbf59"/>
+  <rect x="2" y="15" width="4.5" height="6" rx="1.5" fill="#4ea83c"/>
+  <rect x="2" y="15" width="18" height="6" rx="1.5" fill="none" stroke="#3d9430" stroke-width="0.5"/>
+  <line x1="2.8" y1="17" x2="5.8" y2="17" stroke="#3d9430" stroke-width="0.6"/>
+  <line x1="2.8" y1="19" x2="5.8" y2="19" stroke="#3d9430" stroke-width="0.6"/>
+
+  <!-- Middle (orange) -->
+  <rect x="3" y="9.5" width="18" height="6" rx="1.5" fill="#e88d2e"/>
+  <rect x="3" y="9.5" width="4.5" height="6" rx="1.5" fill="#d47a1e"/>
+  <rect x="3" y="9.5" width="18" height="6" rx="1.5" fill="none" stroke="#c06e15" stroke-width="0.5"/>
+  <line x1="3.8" y1="11.5" x2="6.8" y2="11.5" stroke="#c06e15" stroke-width="0.6"/>
+  <line x1="3.8" y1="13.5" x2="6.8" y2="13.5" stroke="#c06e15" stroke-width="0.6"/>
+
+  <!-- Top (blue) -->
+  <rect x="4" y="4" width="18" height="6" rx="1.5" fill="#4a90d9"/>
+  <rect x="4" y="4" width="4.5" height="6" rx="1.5" fill="#3a78c0"/>
+  <rect x="4" y="4" width="18" height="6" rx="1.5" fill="none" stroke="#2a5a8a" stroke-width="0.5"/>
+  <line x1="4.8" y1="6" x2="7.8" y2="6" stroke="#2a5a8a" stroke-width="0.6"/>
+  <line x1="4.8" y1="8" x2="7.8" y2="8" stroke="#2a5a8a" stroke-width="0.6"/>
+</svg>

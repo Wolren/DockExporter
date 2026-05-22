@@ -1,6 +1,7 @@
 """Pure-data classes: ExportSpec (single export job) and ExportResult (outcome)."""
 
 from dataclasses import dataclass
+from typing import List
 
 
 class StyleMode:
@@ -53,6 +54,7 @@ class ExportSpec:
     style_mode: str = "none"
     replace_in_project: bool = False
     target_crs_authid: str = ""
+    field_names: List[str] = None
 
     @property
     def is_raster_driver(self) -> bool:

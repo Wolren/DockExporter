@@ -76,6 +76,8 @@ desktop.ini
 *.zip
 *.tar.gz
 *.rar
+*.woof
+interesting.gpkg
 
 # Temporary files
 temp/
@@ -88,6 +90,19 @@ tmp/
 *.qgs
 *.qml
 
+# Rust native crate
+woof_native/target/
+woof_native/examples/
+
+# Native module build artifacts
+dock_export/_woof_native/
+
+# Generated benchmark reports
+benchmark_report*.md
+
+# Ruff cache
+.ruff_cache/
+
 # Plugin builder / compiled resources
 resources.py
 resources.qrc
@@ -95,3 +110,4 @@ ui_*.py
 *.ui
 /.opencode/
 /tests/real_data/
+/woof_native/Cargo.lock

@@ -25,6 +25,7 @@ from qgis.core import (
 from qgis.gui import QgsProjectionSelectionDialog
 
 from .export_engine import layer_export_block_reason
+from .layer_settings_dialog import LayerSettingsDialog
 
 COL_TYPE = 0
 COL_SOURCE = 1
@@ -99,6 +100,7 @@ class LayerTableWidget(QTableWidget):
         self._format_overrides: Dict[str, str] = {}
         self._filters: Dict[str, str] = {}
         self._target_crs: Dict[str, str] = {}
+        self._field_filters: Dict[str, List[str]] = {}
         self._export_warnings: Dict[str, str] = {}
         self._row_for_layer: Dict[str, int] = {}
 
@@ -109,7 +111,14 @@ class LayerTableWidget(QTableWidget):
         self.cellDoubleClicked.connect(self._on_cell_double_clicked)
 
     def _setup_header(self) -> None:
-        headers = ["", "Source Name", "Export Name", "Format", "Filter", "CRS"]
+        headers = [
+            "",
+            "Source Name",
+            "Export Name",
+            "Format",
+            "Filter",
+            "CRS + Settings",
+        ]
         self.setHorizontalHeaderLabels(headers)
         hh = self.horizontalHeader()
         hh.setStyleSheet("font-weight:bold;")
@@ -322,6 +331,17 @@ class LayerTableWidget(QTableWidget):
                 self._apply_crs_style(crs_item)
                 self.blockSignals(False)
 
+    def get_field_filter(self, layer_id: str) -> Optional[List[str]]:
+        """Return selected field names for a layer, or None for all fields."""
+        return self._field_filters.get(layer_id)
+
+    def set_field_filter(self, layer_id: str, field_names: Optional[List[str]]) -> None:
+        """Set which fields to include for a layer. None means all fields."""
+        if field_names:
+            self._field_filters[layer_id] = field_names
+        elif layer_id in self._field_filters:
+            del self._field_filters[layer_id]
+
     def export_warning(self, layer_id: str) -> str:
         return self._export_warnings.get(layer_id, "")
 
@@ -429,16 +449,14 @@ class LayerTableWidget(QTableWidget):
         if not current and layer.crs().isValid():
             current = layer.crs().authid()
 
-        dlg = QgsProjectionSelectionDialog(self)
-        crs = QgsCoordinateReferenceSystem(current)
-        if crs.isValid():
-            dlg.setCrs(crs)
-
+        dlg = LayerSettingsDialog(
+            layer_id,
+            current,
+            selected_fields=self._field_filters.get(layer_id),
+            parent=self,
+        )
         if dlg.exec():
-            selected = dlg.crs()
-            if not selected.isValid():
-                return
-            authid = selected.authid()
+            authid = dlg.crs_authid()
             self._target_crs[layer_id] = authid
             if crs_item:
                 self.blockSignals(True)
@@ -446,6 +464,12 @@ class LayerTableWidget(QTableWidget):
                 self._apply_crs_style(crs_item)
                 self.blockSignals(False)
             self.crs_changed.emit(layer_id, authid)
+
+            fields = dlg.selected_field_names()
+            if fields:
+                self._field_filters[layer_id] = fields
+            elif layer_id in self._field_filters:
+                del self._field_filters[layer_id]
 
     def _layer_id_for_row(self, row: int) -> Optional[str]:
         item = self.item(row, COL_SOURCE)

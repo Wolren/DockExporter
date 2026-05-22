@@ -10,7 +10,7 @@ import os
 
 from qgis.core import QgsProject
 
-from .woof_format import extract_woof_to_directory
+from .woof import extract_woof_to_directory
 
 logger = logging.getLogger("DockExport.WoofStorage")
 

@@ -976,6 +976,7 @@ class ExportWidget(QWidget):
                         style_mode=em,
                         replace_in_project=replace,
                         target_crs_authid=target_crs,
+                        field_names=self._single_table.get_field_filter(lid),
                     )
                 )
 
@@ -1054,6 +1055,7 @@ class ExportWidget(QWidget):
                     style_mode=style_mode,
                     replace_in_project=replace,
                     target_crs_authid=target_crs,
+                    field_names=self._gpkg_table.get_field_filter(lid),
                 )
             )
 

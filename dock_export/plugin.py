@@ -3,7 +3,7 @@
 import os
 
 from qgis.PyQt.QtCore import Qt, QPoint
-from qgis.PyQt.QtGui import QAction
+from qgis.PyQt.QtGui import QAction, QIcon
 from qgis.PyQt.QtWidgets import QFileDialog, QMenu, QMessageBox
 from qgis.core import QgsMapLayer
 
@@ -22,17 +22,20 @@ class DockExportPlugin:
 
     def initGui(self):
         """Set up toolbar icon, plugin menu, and layer tree context menu."""
-        self._action = QAction("Dock Export", self.iface.mainWindow())
+        icon_path = os.path.join(os.path.dirname(__file__), "icons", "dock_export.svg")
+        self._action = QAction(QIcon(icon_path), "Dock Export", self.iface.mainWindow())
         self._action.setCheckable(True)
         self._action.triggered.connect(self._toggle_dock)
         self.iface.addToolBarIcon(self._action)
         self.iface.addPluginToMenu("&Dock Export", self._action)
 
-        # Add "Open .woof Project..." to Project → Open From
+        # Add "Open .woof Project..." to Plugin menu and Project → Open From
         self._open_woof_action = QAction(
-            "Open .woof Project...", self.iface.mainWindow()
+            QIcon(icon_path), "Open .woof Project...", self.iface.mainWindow()
         )
         self._open_woof_action.triggered.connect(self._on_open_woof)
+        self.iface.addPluginToMenu("&Dock Export", self._open_woof_action)
+
         self._open_woof_parent = None
         project_menu = self.iface.projectMenu()
         if project_menu:
@@ -62,6 +65,7 @@ class DockExportPlugin:
         """Remove toolbar icon, menu entries, dock widget, and disconnect signals."""
         self.iface.removeToolBarIcon(self._action)
         self.iface.removePluginMenu("&Dock Export", self._action)
+        self.iface.removePluginMenu("&Dock Export", self._open_woof_action)
         if self._open_woof_action and self._open_woof_parent:
             self._open_woof_parent.removeAction(self._open_woof_action)
         if self._dock:

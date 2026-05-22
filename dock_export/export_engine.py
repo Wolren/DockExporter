@@ -167,6 +167,7 @@ class ExportEngine:
                 spec.filter_expression if spec.filter_expression.strip() else "",
                 spec.driver,
                 target_crs.authid(),
+                field_names=spec.field_names,
             )
             if source is None:
                 result.error = clone_error or "Could not build filtered/safe clone"
@@ -177,16 +178,31 @@ class ExportEngine:
             write_source = layer
             result.features_written = layer.featureCount()
 
+            # Drop FID for GPKG (always include all other fields)
             if spec.driver == "GPKG" or is_gpkg_mode:
-                fid_idx = None
-                for i in range(layer.fields().count()):
-                    if layer.fields()[i].name().lower() == "fid":
-                        fid_idx = i
-                        break
-                if fid_idx is not None:
-                    opts.attributes = [
-                        i for i in range(layer.fields().count()) if i != fid_idx
-                    ]
+                opts.attributes = [
+                    i
+                    for i in range(layer.fields().count())
+                    if layer.fields()[i].name().lower() != "fid"
+                ]
+
+        # Apply per-layer field filter
+        if spec.field_names:
+            if opts.attributes is not None:
+                # Intersect with existing attribute filter (e.g., FID drop)
+                existing = set(opts.attributes)
+                indices = [
+                    i
+                    for i in range(layer.fields().count())
+                    if layer.fields()[i].name() in spec.field_names and i in existing
+                ]
+                opts.attributes = indices
+            else:
+                opts.attributes = [
+                    i
+                    for i in range(layer.fields().count())
+                    if layer.fields()[i].name() in spec.field_names
+                ]
 
         writer = QgsVectorFileWriter.create(
             output_path,
@@ -459,10 +475,12 @@ class ExportEngine:
         expression: str,
         driver_name: str = "",
         target_crs_authid: str = "",
+        field_names: Optional[List[str]] = None,
     ) -> Tuple[Optional[QgsVectorLayer], int, str]:
         """Create in-memory clone with filter expression and optional CRS reprojection.
 
         Drops 'fid' field for GPKG driver. Never sets subset string on source.
+        *field_names* restricts which attribute columns to include (None = all).
         Returns (memory_layer, feature_count, error_message).
         """
         drop_fid = driver_name.upper() == "GPKG"
@@ -473,6 +491,8 @@ class ExportEngine:
 
         for idx, field in enumerate(source_fields):
             if drop_fid and field.name().lower() == "fid":
+                continue
+            if field_names is not None and field.name() not in field_names:
                 continue
             kept_indexes.append(idx)
             kept_fields.append(field)

@@ -1,6 +1,6 @@
 [package]
 name = "woof_native"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [lib]
@@ -9,8 +9,10 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 pyo3 = { version = "0.22", features = ["abi3-py39"] }
-zstd = { version = "0.13", features = ["experimental"] }
+zstd = { version = "0.13", features = ["legacy"] }
 rayon = "1.10"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+thiserror = "2"
 
 [profile.release]
 opt-level = 3
