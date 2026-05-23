@@ -3,8 +3,9 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![QGIS](https://img.shields.io/badge/QGIS-3.22+-green)](https://www.qgis.org/)
+[![Qt](https://img.shields.io/badge/Qt-5.x_|_6.x-green)](https://www.qt.io/)
 
-A spec-driven export plugin for QGIS. Select layers once, configure everything in one place — names, formats, filters, CRS, styles, field subsets — and export to single files, GeoPackage, or portable archives. Never mutates live project layers.
+A spec-driven export plugin for QGIS. Select layers once, configure everything in one place — names, formats, filters, CRS, styles, field subsets — and export to single files, GeoPackage, or portable `.woof` / ZIP archives. Never mutates live project layers.
 
 ---
 
@@ -19,6 +20,33 @@ Dock Export replaces all of that with a single dock:
 - **Export in one click** — single files (multiple formats per layer), one multi-layer GeoPackage, or a fully self-contained archive (`.woof` / `.zip`) with rewritten project XML
 
 It's a shortcut for: *I need to get data out of QGIS without busywork.*
+
+---
+
+### Gallery
+
+| Single Files Tab | GeoPackage Tab | Project Export Tab | History Tab |
+| ---------------- | -------------- | ------------------ | ----------- |
+| ![Single files tab](gallery/single-tab.png) | ![GeoPackage tab](gallery/gpkg-tab.png) | ![Project export tab](gallery/project-tab.png) | ![History tab](gallery/history-tab.png) |
+
+---
+
+## Pipeline
+
+```mermaid
+flowchart LR
+    L[Project Layers] --> LTW[LayerTableWidget]
+    LTW --> SPECS[ExportSpec[]]
+    SPECS -->|Single Files| ENG[ExportEngine]
+    SPECS -->|GeoPackage| ENG
+    SPECS -->|Project Export| PET[ProjectExportTab]
+
+    ENG --> SF[Single Files\n.gpkg .shp .tif ...]
+    ENG --> GPKG[Multi-layer\nGeoPackage]
+
+    PET --> WOOF[.woof archive\nv3 Rust]
+    PET --> ZIP[ZIP archive]
+```
 
 ---
 
@@ -56,8 +84,7 @@ GeoTIFF, PNG, JPEG, JPEG2000, WebP, BMP, MBTiles, ERDAS Imagine.
 
 ### Archive export (.woof / ZIP)
 
-- **.woof (v2)** — Python implementation, zstd per-entry
-- **.woof (v3)** — Rust native crate (`native_woof_impl`), xxhash3-64 integrity hashes, seek table for random access, zstd compression, parallel decompression
+- **.woof** — native Rust archive format with xxhash3-64 integrity verification, seek table for random access, per-entry zstd compression, parallel decompression
 - **ZIP** — standard deflate compression via Python `zipfile`
 - **Compression levels** — None / Normal / Heavy (maps to zstd levels 0 / 3 / 9)
 - **Handles remote layers** — WMS, WFS, PostGIS, etc. keep their original datasource URLs in the project XML
@@ -77,19 +104,11 @@ GeoTIFF, PNG, JPEG, JPEG2000, WebP, BMP, MBTiles, ERDAS Imagine.
 
 ## .woof Archive Format
 
-`.woof` is a custom binary archive designed for packaging QGIS projects. It bundles source files, sidecars, project resources, and a rewritten `.qgs` project file into a single portable file. The native Rust implementation uses xxhash3-64 integrity hashes, a seek table for random access (`unpack_one`), per-entry zstd compression, and parallel decompression.
+`.woof` is a portable, self-contained snapshot of a QGIS project. It bundles every file the project depends on — vector datasets, rasters, GeoPackages, QML/SLD styles, world files, layout images, SVGs, report templates, and the project file itself with all datasource paths rewritten to relative references inside the archive.
 
----
+`.woof` files are opened directly from QGIS via Project → Open From → Open `.woof` Project. The archive is extracted in-memory and the project loads with all paths resolved — no broken links, no missing sidecars. Remote layers (WMS, WFS, PostGIS) keep their original URLs and are not packaged; scratch and memory layers are noted as not packaged.
 
-## Compatibility
-
-- QGIS 3.22 – 4.99
-- Qt5 / Qt6
-- GDAL (bundled with QGIS)
-- Python 3.10+
-- Rust native crate requires `maturin build --release` (or use a pre-built wheel)
-
----
+The archive format is implemented as a native Rust crate (`native_woof_impl`) exposed to Python via PyO3. Each file in the archive is stored as a separate entry with its own zstd compression level, xxhash3-64 integrity hash, and seek-table metadata that allows random access — you can extract a single file without decompressing the entire archive. Decompression runs in parallel across entries for fast extraction.
 
 ## License
 
