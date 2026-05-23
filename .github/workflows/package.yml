@@ -37,12 +37,19 @@ jobs:
         shell: pwsh
         run: |
           $wheel = Get-ChildItem -Path woof_native/dist -Filter "*.whl" | Select-Object -First 1
-          if (-not $wheel) { throw "No wheel found" }
+          if (-not $wheel) { throw "No wheel found at woof_native/dist" }
+          Write-Host "Found wheel: $($wheel.Name)"
           $tmp = Join-Path $env:RUNNER_TEMP "wheel_extract"
           New-Item -ItemType Directory -Path $tmp -Force | Out-Null
           python -c "import zipfile, sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" $wheel.FullName $tmp
-          $native = Get-ChildItem -Path $tmp -Filter "_native_impl*" -Recurse | Select-Object -First 1
+          Write-Host "Wheel extracted to $tmp"
+          Get-ChildItem -Path $tmp -Recurse | Select-Object FullName | Write-Host
+          $native = Get-ChildItem -Path $tmp -Include "*_native_impl*" -Recurse | Select-Object -First 1
+          if (-not $native) {
+            $native = Get-ChildItem -Path $tmp -Include "*.so", "*.pyd", "*.dylib" -Recurse | Select-Object -First 1
+          }
           if (-not $native) { throw "Native binary not found in wheel" }
+          Write-Host "Found native binary: $($native.Name)"
           New-Item -ItemType Directory -Path dock_export/_woof_native -Force | Out-Null
           Copy-Item -Path $native.FullName -Destination "dock_export/_woof_native/$($native.Name)" -Force
 
