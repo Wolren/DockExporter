@@ -77,14 +77,7 @@ GeoTIFF, PNG, JPEG, JPEG2000, WebP, BMP, MBTiles, ERDAS Imagine.
 
 ## .woof Archive Format
 
-`.woof` is a custom binary archive designed for packaging QGIS projects. It bundles source files, sidecars, project resources, and a rewritten `.qgs` project file into a single portable file.
-
-| Version | Language | Hash | Structure | Pack speed | Notes |
-|---------|----------|------|-----------|------------|-------|
-| v2 | Python | BLAKE3 → xxhash3-64 | Flat: entry count + name heap + payload blob | ~400 MB/s (no-compress) | Reference implementation, no random access |
-| v3 | Rust | xxhash3-64 | Seek table: sorted name heap, per-entry offset + hash + compressed/uncompressed size | ~650 MB/s (no-compress) | Random access via `unpack_one`, parallel decompression, integrity verification per entry |
-
-Both versions use zstd compression per entry.
+`.woof` is a custom binary archive designed for packaging QGIS projects. It bundles source files, sidecars, project resources, and a rewritten `.qgs` project file into a single portable file. The native Rust implementation uses xxhash3-64 integrity hashes, a seek table for random access (`unpack_one`), per-entry zstd compression, and parallel decompression.
 
 ---
 
