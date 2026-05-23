@@ -15,7 +15,9 @@ from typing import Dict, List, Optional, Set, Tuple
 
 
 from qgis.PyQt.QtCore import Qt
+from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QComboBox,
     QFileDialog,
@@ -28,6 +30,8 @@ from qgis.PyQt.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QSizePolicy,
+    QStyle,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -37,12 +41,32 @@ from qgis.core import (
     QgsApplication,
     QgsMapLayer,
     QgsProject,
+    QgsRasterLayer,
+    QgsVectorLayer,
 )
 
 from .export_engine import layer_export_block_reason
 from .woof import pack_woof_to_file, pack_woof, unpack_woof
 
 logger = logging.getLogger("DockExport.ProjectExport")
+
+
+class _CappedTableWidget(QTableWidget):
+    """QTableWidget whose preferred height is capped to avoid dock overflow."""
+
+    def __init__(self, rows=0, cols=0, parent=None):
+        super().__init__(rows, cols, parent)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        max_rows = 8
+        header_h = self.horizontalHeader().height() if self.horizontalHeader() else 25
+        row_h = self.verticalHeader().defaultSectionSize() or 22
+        frame = self.frameWidth() * 2
+        max_h = header_h + max_rows * row_h + frame
+        hint.setHeight(min(hint.height(), max_h))
+        return hint
 
 
 def _source_file_path(layer: QgsMapLayer) -> Optional[str]:
@@ -211,17 +235,38 @@ class ProjectExportTab(QWidget):
         layout.setSpacing(6)
 
         # Layer table
-        self._table = QTableWidget(0, 3)
+        self._table = _CappedTableWidget(0, 3)
         self._table.setHorizontalHeaderLabels(["", "Layer name", "Source"])
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self._table.verticalHeader().setVisible(False)
         hh = self._table.horizontalHeader()
+        hh.setStretchLastSection(True)
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self._table.setColumnWidth(0, 28)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        self._table.setColumnWidth(0, 24)
+        self._table.setColumnWidth(1, 170)
+        self._table.setColumnWidth(2, 100)
         layout.addWidget(self._table)
+
+        sel_row = QHBoxLayout()
+        all_btn = QPushButton("Select all")
+        all_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        all_btn.clicked.connect(self.check_all)
+        sel_row.addWidget(all_btn, 1)
+        none_btn = QPushButton("Deselect all")
+        none_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        none_btn.clicked.connect(self.uncheck_all)
+        sel_row.addWidget(none_btn, 1)
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        refresh_btn.clicked.connect(self._on_refresh)
+        sel_row.addWidget(refresh_btn, 1)
+        layout.addLayout(sel_row)
 
         # Mode selector
         mode_group = QGroupBox("Packaging mode")
@@ -323,6 +368,43 @@ class ProjectExportTab(QWidget):
 
     # ── Table ───────────────────────────────────────────────────────
 
+    def check_all(self) -> None:
+        self._table.selectAll()
+
+    def uncheck_all(self) -> None:
+        self._table.clearSelection()
+
+    def _on_refresh(self) -> None:
+        parent = self.parent()
+        if parent and hasattr(parent, "_refresh_layers"):
+            parent._refresh_layers()
+        else:
+            self._refresh_table()
+
+    @staticmethod
+    def _icon_for_layer(layer: QgsMapLayer) -> QIcon:
+        if isinstance(layer, QgsVectorLayer):
+            icon = QgsApplication.getThemeIcon("/mIconVector.svg")
+            return (
+                icon
+                if not icon.isNull()
+                else QApplication.style().standardIcon(
+                    QStyle.StandardPixmap.SP_FileIcon
+                )
+            )
+        if isinstance(layer, QgsRasterLayer):
+            icon = QgsApplication.getThemeIcon("/mIconRaster.svg")
+            return (
+                icon
+                if not icon.isNull()
+                else QApplication.style().standardIcon(
+                    QStyle.StandardPixmap.SP_DriveHDIcon
+                )
+            )
+        return QApplication.style().standardIcon(
+            QStyle.StandardPixmap.SP_FileDialogDetailedView
+        )
+
     def _refresh_table(self) -> None:
         layers = list(QgsProject.instance().mapLayers().values())
         self._table.setRowCount(0)
@@ -330,20 +412,15 @@ class ProjectExportTab(QWidget):
             row = self._table.rowCount()
             self._table.insertRow(row)
 
-            chk = QTableWidgetItem("")
-            chk.setFlags(
-                Qt.ItemFlag.ItemIsEnabled
-                | Qt.ItemFlag.ItemIsSelectable
-                | Qt.ItemFlag.ItemIsUserCheckable
-            )
-            chk.setCheckState(Qt.CheckState.Checked)
-            chk.setData(Qt.ItemDataRole.UserRole, layer.id())
+            type_item = QTableWidgetItem("")
+            type_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            type_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            type_item.setData(Qt.ItemDataRole.UserRole, layer.id())
+            type_item.setIcon(self._icon_for_layer(layer))
             rsn = layer_export_block_reason(layer)
             if rsn:
-                chk.setCheckState(Qt.CheckState.Unchecked)
-                chk.setFlags(Qt.ItemFlag.ItemIsEnabled)
-                chk.setToolTip(rsn)
-            self._table.setItem(row, 0, chk)
+                type_item.setToolTip(rsn)
+            self._table.setItem(row, 0, type_item)
 
             name_item = QTableWidgetItem(layer.name())
             name_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
@@ -387,10 +464,13 @@ class ProjectExportTab(QWidget):
 
     def _get_checked_layers(self) -> List[QgsMapLayer]:
         result: List[QgsMapLayer] = []
-        for row in range(self._table.rowCount()):
-            chk = self._table.item(row, 0)
-            if chk and chk.checkState() == Qt.CheckState.Checked:
-                lid = chk.data(Qt.ItemDataRole.UserRole)
+        model = self._table.selectionModel()
+        if not model:
+            return result
+        for index in model.selectedRows():
+            item = self._table.item(index.row(), 0)
+            if item:
+                lid = item.data(Qt.ItemDataRole.UserRole)
                 layer = QgsProject.instance().mapLayer(lid)
                 if layer:
                     result.append(layer)
@@ -404,7 +484,7 @@ class ProjectExportTab(QWidget):
 
         layers = self._get_checked_layers()
         if not layers:
-            QMessageBox.warning(self, "Nothing selected", "No layers checked.")
+            QMessageBox.warning(self, "Nothing selected", "No layers selected.")
             return
 
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)

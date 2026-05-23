@@ -1,0 +1,91 @@
+name: Package plugin
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-tags: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install maturin
+        run: pip install maturin
+
+      - name: Build native module
+        shell: pwsh
+        run: |
+          Set-Location -LiteralPath woof_native
+          maturin build --release --out dist
+
+      - name: Extract native binary
+        shell: pwsh
+        run: |
+          $wheel = Get-ChildItem -Path woof_native/dist -Filter "*.whl" | Select-Object -First 1
+          if (-not $wheel) { throw "No wheel found" }
+          $tmp = Join-Path $env:RUNNER_TEMP "wheel_extract"
+          New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+          python -c "import zipfile, sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" $wheel.FullName $tmp
+          $native = Get-ChildItem -Path $tmp -Filter "_native_impl*" -Recurse | Select-Object -First 1
+          if (-not $native) { throw "Native binary not found in wheel" }
+          New-Item -ItemType Directory -Path dock_export/_woof_native -Force | Out-Null
+          Copy-Item -Path $native.FullName -Destination "dock_export/_woof_native/$($native.Name)" -Force
+
+      - name: Read version from metadata.txt
+        id: metadata
+        shell: pwsh
+        run: |
+          $content = Get-Content -Path dock_export/metadata.txt
+          $version = ($content | Select-String '^version=(.+)').Matches.Groups[1].Value
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Package plugin
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dock_export -DestinationPath dock_export.zip -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dock_export
+          path: dock_export.zip
+
+      - name: Create tag if new version
+        id: tag
+        shell: pwsh
+        run: |
+          $tag = "v${{ steps.metadata.outputs.version }}"
+          $existing = git tag -l "$tag"
+          if (-not $existing) {
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a $tag -m "Release $tag"
+            git push origin $tag
+            "created=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          } else {
+            "created=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          }
+
+      - name: Create release
+        if: steps.tag.outputs.created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ steps.metadata.outputs.version }}" --title "Dock Export v${{ steps.metadata.outputs.version }}" --generate-notes dock_export.zip

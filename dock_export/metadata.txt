@@ -10,6 +10,7 @@ email=
 homepage=
 tracker=
 repository=
+icon=icons/dock_export.svg
 tags=export, geopackage, vector, raster, style, filter, dock
 experimental=False
 deprecated=False

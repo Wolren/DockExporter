@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
-from qgis.PyQt.QtCore import Qt, pyqtSignal
+from qgis.PyQt.QtCore import QSize, Qt, pyqtSignal
 from qgis.PyQt.QtGui import QBrush, QColor, QIcon, QPalette
 from qgis.PyQt.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QHeaderView,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QStyle,
@@ -22,7 +23,6 @@ from qgis.core import (
     QgsRasterLayer,
     QgsVectorLayer,
 )
-from qgis.gui import QgsProjectionSelectionDialog
 
 from .export_engine import layer_export_block_reason
 from .layer_settings_dialog import LayerSettingsDialog
@@ -106,9 +106,21 @@ class LayerTableWidget(QTableWidget):
 
         self._setup_header()
         self._setup_appearance()
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.itemChanged.connect(self._on_item_changed)
         self.itemSelectionChanged.connect(self._emit_selection_changed)
-        self.cellDoubleClicked.connect(self._on_cell_double_clicked)
+        self.cellClicked.connect(self._on_cell_clicked)
+
+    def sizeHint(self):
+        """Cap preferred height so the dock does not overflow the main window."""
+        hint = super().sizeHint()
+        max_rows = 10
+        header_h = self.horizontalHeader().height() if self.horizontalHeader() else 25
+        row_h = self.verticalHeader().defaultSectionSize() or 22
+        frame = self.frameWidth() * 2
+        max_h = header_h + max_rows * row_h + frame
+        hint.setHeight(min(hint.height(), max_h))
+        return hint
 
     def _setup_header(self) -> None:
         headers = [
@@ -117,21 +129,24 @@ class LayerTableWidget(QTableWidget):
             "Export Name",
             "Format",
             "Filter",
-            "CRS + Settings",
+            "Settings",
         ]
         self.setHorizontalHeaderLabels(headers)
         hh = self.horizontalHeader()
         hh.setStyleSheet("font-weight:bold;")
+        hh.setStretchLastSection(True)
         hh.setSectionResizeMode(COL_TYPE, QHeaderView.ResizeMode.Fixed)
-        hh.setSectionResizeMode(COL_SOURCE, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(COL_EXPORT, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(COL_FORMAT, QHeaderView.ResizeMode.Fixed)
+        hh.setSectionResizeMode(COL_SOURCE, QHeaderView.ResizeMode.Interactive)
+        hh.setSectionResizeMode(COL_EXPORT, QHeaderView.ResizeMode.Interactive)
+        hh.setSectionResizeMode(COL_FORMAT, QHeaderView.ResizeMode.Interactive)
         hh.setSectionResizeMode(COL_FILTER, QHeaderView.ResizeMode.Fixed)
-        hh.setSectionResizeMode(COL_CRS, QHeaderView.ResizeMode.Fixed)
-        self.setColumnWidth(COL_TYPE, 34)
-        self.setColumnWidth(COL_FORMAT, 90 if self._show_format else 0)
-        self.setColumnWidth(COL_FILTER, 64)
-        self.setColumnWidth(COL_CRS, 82)
+        hh.setSectionResizeMode(COL_CRS, QHeaderView.ResizeMode.Interactive)
+        self.setColumnWidth(COL_TYPE, 20)
+        self.setColumnWidth(COL_SOURCE, 90 if self._show_format else 125)
+        self.setColumnWidth(COL_EXPORT, 90 if self._show_format else 125)
+        self.setColumnWidth(COL_FORMAT, 80 if self._show_format else 0)
+        self.setColumnWidth(COL_FILTER, 50)
+        self.setColumnWidth(COL_CRS, 48)
         self.setColumnHidden(COL_FORMAT, not self._show_format)
 
     def _setup_appearance(self) -> None:
@@ -242,11 +257,7 @@ class LayerTableWidget(QTableWidget):
             default_crs = layer.crs().authid() if layer.crs().isValid() else ""
             target_crs = self._target_crs.get(layer.id(), default_crs)
             crs_item = QTableWidgetItem(target_crs)
-            crs_item.setFlags(
-                Qt.ItemFlag.ItemIsEnabled
-                | Qt.ItemFlag.ItemIsSelectable
-                | Qt.ItemFlag.ItemIsEditable
-            )
+            crs_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             crs_item.setData(Qt.ItemDataRole.UserRole, layer.id())
             self._apply_crs_style(crs_item)
             self.setItem(row, COL_CRS, crs_item)
@@ -429,14 +440,8 @@ class LayerTableWidget(QTableWidget):
             layer = QgsProject.instance().mapLayer(layer_id)
             self._apply_export_name_style(item, new_name, layer.name() if layer else "")
             self.export_name_changed.emit(layer_id, new_name)
-        elif col == COL_CRS:
-            layer_id = item.data(Qt.ItemDataRole.UserRole)
-            if not layer_id:
-                return
-            self._target_crs[layer_id] = item.text().strip()
-            self._apply_crs_style(item)
 
-    def _on_cell_double_clicked(self, row: int, col: int) -> None:
+    def _on_cell_clicked(self, row: int, col: int) -> None:
         if col != COL_CRS:
             return
         layer_id = self._layer_id_for_row(row)
@@ -514,14 +519,15 @@ class LayerTableWidget(QTableWidget):
 
     def _apply_crs_style(self, item: QTableWidgetItem) -> None:
         value = item.text().strip()
+        hint = " (click for settings)"
         if not value:
-            item.setToolTip("Uses source layer CRS")
+            item.setToolTip("Uses source layer CRS" + hint)
             item.setForeground(QBrush(self.palette().color(QPalette.ColorRole.Text)))
             return
         crs = QgsCoordinateReferenceSystem(value)
         if crs.isValid():
-            item.setToolTip(f"Target CRS: {crs.authid()}")
+            item.setToolTip(f"Target CRS: {crs.authid()}" + hint)
             item.setForeground(QBrush(self.palette().color(QPalette.ColorRole.Text)))
         else:
-            item.setToolTip("Invalid CRS (use form like EPSG:4326)")
+            item.setToolTip("Invalid CRS" + hint)
             item.setForeground(QBrush(QColor("#b91c1c")))

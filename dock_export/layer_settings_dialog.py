@@ -8,21 +8,23 @@ from qgis.PyQt.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
 )
-from qgis.core import QgsCoordinateReferenceSystem, QgsProject, QgsVectorLayer
+from qgis.core import QgsCoordinateReferenceSystem, QgsField, QgsProject, QgsVectorLayer
 from qgis.gui import QgsProjectionSelectionDialog
 
 
 class LayerSettingsDialog(QDialog):
-    """Dialog for per-layer export settings: target CRS and attribute field selection.
+    """Dialog for per-layer export settings: target CRS and attribute field selection."""
 
-    Opens from double-clicking the CRS column in the layer table.
-    """
+    _COL_CHECK = 0
+    _COL_NAME = 1
+    _COL_TYPE = 2
 
     def __init__(
         self,
@@ -38,7 +40,7 @@ class LayerSettingsDialog(QDialog):
         self._field_checkboxes: Dict[str, QCheckBox] = {}
 
         self.setWindowTitle("Layer Export Settings")
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(420)
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -51,11 +53,13 @@ class LayerSettingsDialog(QDialog):
         # CRS row
         crs_row = QHBoxLayout()
         crs_row.addWidget(QLabel("Target CRS:"))
-        crs_label = QLabel(self._crs_authid or "Source CRS (no override)")
-        crs_label.setStyleSheet("color:#555;")
-        crs_row.addWidget(crs_label)
+        self._crs_label = QLabel(
+            self._crs_authid if self._crs_authid else "Source CRS (no override)"
+        )
+        self._crs_label.setStyleSheet("color:#555;")
+        crs_row.addWidget(self._crs_label)
         change_btn = QPushButton("Change...")
-        change_btn.clicked.connect(lambda: self._pick_crs(crs_label))
+        change_btn.clicked.connect(self._pick_crs)
         crs_row.addWidget(change_btn)
         crs_row.addStretch()
         layout.addLayout(crs_row)
@@ -63,30 +67,47 @@ class LayerSettingsDialog(QDialog):
         # Field selection (vector only)
         if isinstance(layer, QgsVectorLayer):
             layout.addWidget(QLabel("Attribute fields to include:"))
-            self._field_table = QTableWidget(0, 1)
-            self._field_table.setHorizontalHeaderLabels(["Include"])
+
+            self._field_table = QTableWidget(0, 3)
+            self._field_table.setHorizontalHeaderLabels(["", "Name", "Type"])
             self._field_table.verticalHeader().setVisible(False)
             hh = self._field_table.horizontalHeader()
-            hh.setStretchLastSection(True)
+            hh.setSectionResizeMode(self._COL_CHECK, QHeaderView.ResizeMode.Fixed)
+            hh.setSectionResizeMode(self._COL_NAME, QHeaderView.ResizeMode.Stretch)
+            hh.setSectionResizeMode(self._COL_TYPE, QHeaderView.ResizeMode.Fixed)
+            self._field_table.setColumnWidth(self._COL_CHECK, 28)
+            self._field_table.setColumnWidth(self._COL_TYPE, 100)
+            self._field_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
 
-            all_names = [f.name() for f in layer.fields()]
-            select_all = QCheckBox("Select all")
-            select_all.setChecked(True)
-            select_all.toggled.connect(self._on_select_all_toggled)
-            layout.addWidget(select_all)
-
-            for fname in all_names:
+            all_checked = not self._selected_fields
+            for f in layer.fields():
+                fname = f.name()
                 row = self._field_table.rowCount()
                 self._field_table.insertRow(row)
-                cb = QCheckBox(fname)
-                cb.setChecked(
-                    not self._selected_fields or fname in self._selected_fields
+
+                check_item = QTableWidgetItem("")
+                check_item.setFlags(
+                    Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
                 )
-                self._field_checkboxes[fname] = cb
-                item = QTableWidgetItem("")
-                item.setFlags(Qt.ItemFlag.ItemIsNoFlags)
-                self._field_table.setItem(row, 0, item)
-                self._field_table.setCellWidget(row, 0, cb)
+                check_item.setCheckState(
+                    Qt.CheckState.Checked
+                    if (all_checked or fname in self._selected_fields)
+                    else Qt.CheckState.Unchecked
+                )
+                self._field_table.setItem(row, self._COL_CHECK, check_item)
+
+                name_item = QTableWidgetItem(fname)
+                name_item.setFlags(
+                    Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+                )
+                self._field_table.setItem(row, self._COL_NAME, name_item)
+
+                type_item = QTableWidgetItem(self._field_type_str(f))
+                type_item.setFlags(
+                    Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+                )
+                type_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self._field_table.setItem(row, self._COL_TYPE, type_item)
 
             layout.addWidget(self._field_table)
 
@@ -98,7 +119,14 @@ class LayerSettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def _pick_crs(self, label: QLabel) -> None:
+    @staticmethod
+    def _field_type_str(f: QgsField) -> str:
+        type_name = f.typeName()
+        if f.length() > 0:
+            return f"{type_name}({f.length()})"
+        return type_name
+
+    def _pick_crs(self) -> None:
         dlg = QgsProjectionSelectionDialog(self)
         crs = QgsCoordinateReferenceSystem(self._crs_authid)
         if crs.isValid():
@@ -107,14 +135,16 @@ class LayerSettingsDialog(QDialog):
             selected = dlg.crs()
             if selected.isValid():
                 self._crs_authid = selected.authid()
-                label.setText(self._crs_authid)
-
-    def _on_select_all_toggled(self, checked: bool) -> None:
-        for cb in self._field_checkboxes.values():
-            cb.setChecked(checked)
+                self._crs_label.setText(self._crs_authid)
 
     def crs_authid(self) -> str:
         return self._crs_authid
 
     def selected_field_names(self) -> List[str]:
-        return [name for name, cb in self._field_checkboxes.items() if cb.isChecked()]
+        names = []
+        for row in range(self._field_table.rowCount()):
+            check = self._field_table.item(row, self._COL_CHECK)
+            name = self._field_table.item(row, self._COL_NAME)
+            if check and name and check.checkState() == Qt.CheckState.Checked:
+                names.append(name.text())
+        return names
