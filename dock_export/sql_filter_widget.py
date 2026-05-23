@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple, Optional
+from typing import ClassVar
 
+from qgis.core import (
+    QgsExpression,
+    QgsFeatureRequest,
+    QgsProject,
+    QgsVectorLayer,
+)
 from qgis.PyQt.QtCore import Qt, pyqtSignal
 from qgis.PyQt.QtGui import QFont
 from qgis.PyQt.QtWidgets import (
+    QComboBox,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -20,13 +27,6 @@ from qgis.PyQt.QtWidgets import (
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
-    QComboBox,
-)
-from qgis.core import (
-    QgsExpression,
-    QgsFeatureRequest,
-    QgsProject,
-    QgsVectorLayer,
 )
 
 
@@ -41,22 +41,15 @@ class SQLFilterDialog(QDialog):
     filter_applied = pyqtSignal(str, str)
 
     def __init__(
-            self,
-            layer_items: Optional[List[Tuple[str, str]]] = None,
-            current_filters: Optional[Dict[str, str]] = None,
-            parent=None,
+        self,
+        layer_items: list[tuple[str, str]] | None = None,
+        current_filters: dict[str, str] | None = None,
+        parent=None,
     ):
-        """
-        Parameters
-        ----------
-        layer_items : list of (layer_id, export_name)
-            Vector layers only.
-        current_filters : dict {layer_id: expression_string}
-        """
         super().__init__(parent)
-        self._layer_items: List[Tuple[str, str]] = layer_items or []
-        self.current_filters: Dict[str, str] = dict(current_filters or {})
-        self._current_layer: Optional[QgsVectorLayer] = None
+        self._layer_items: list[tuple[str, str]] = layer_items or []
+        self.current_filters: dict[str, str] = dict(current_filters or {})
+        self._current_layer: QgsVectorLayer | None = None
 
         self.setWindowTitle("Feature Filter (QGIS Expression)")
         self.setMinimumWidth(860)
@@ -99,7 +92,7 @@ class SQLFilterDialog(QDialog):
             "\"type\" = 'school'\n"
             '"population" > 5000 AND "population" < 50000\n'
             "\"name\" LIKE '%Park%'\n"
-            'LENGTH("description") > 0'
+            'LENGTH("description") > 0',
         )
         mono = QFont("Courier New" if Qt is not None else "monospace")
         mono.setPointSize(10)
@@ -147,7 +140,7 @@ class SQLFilterDialog(QDialog):
         self._result_label.setWordWrap(True)
         self._result_label.setMinimumHeight(44)
         self._result_label.setStyleSheet(
-            "font-size:9pt; padding:6px; border-radius:3px; background:#f5f5f5;"
+            "font-size:9pt; padding:6px; border-radius:3px; background:#f5f5f5;",
         )
         layout.addWidget(self._result_label)
 
@@ -164,7 +157,7 @@ class SQLFilterDialog(QDialog):
 
         apply_btn = QPushButton("Apply Filter")
         apply_btn.setStyleSheet(
-            "background:#3a7f46; color:white; font-weight:bold; padding:5px 14px;"
+            "background:#3a7f46; color:white; font-weight:bold; padding:5px 14px;",
         )
         apply_btn.clicked.connect(self._apply)
         btn_row.addWidget(apply_btn)
@@ -172,6 +165,7 @@ class SQLFilterDialog(QDialog):
         layout.addLayout(btn_row)
 
     def _populate_layer_combo(self) -> None:
+        """Populate the layer combo from the current layer_items list."""
         prev_id = self._layer_combo.currentData()
         self._layer_combo.blockSignals(True)
         self._layer_combo.clear()
@@ -195,11 +189,13 @@ class SQLFilterDialog(QDialog):
             self._layer_combo.setCurrentIndex(restore_idx)
             self._on_layer_changed(restore_idx)
 
-    def update_layer_items(self, layer_items: List[Tuple[str, str]]) -> None:
+    def update_layer_items(self, layer_items: list[tuple[str, str]]) -> None:
+        """Replace the layer list and repopulate the combo."""
         self._layer_items = layer_items
         self._populate_layer_combo()
 
     def _on_layer_changed(self, index: int) -> None:
+        """Load the expression for the newly selected layer."""
         if index < 0 or self._layer_combo.count() == 0:
             self._current_layer = None
             self._field_list.clear()
@@ -218,6 +214,7 @@ class SQLFilterDialog(QDialog):
         self._result_label.setText("")
 
     def _populate_fields(self) -> None:
+        """Fill the field list for the current layer."""
         self._field_list.clear()
         if not self._current_layer:
             return
@@ -227,13 +224,12 @@ class SQLFilterDialog(QDialog):
             self._field_list.addItem(item)
 
     def _insert_field(self, item: QListWidgetItem) -> None:
-        name = item.data(Qt.ItemDataRole.UserRole)
         cursor = self._editor.textCursor()
-        cursor.insertText(f'"{name}"')
+        cursor.insertText(f'"{item.data(Qt.ItemDataRole.UserRole)}"')
         self._editor.setTextCursor(cursor)
         self._editor.setFocus()
 
-    _CATEGORIES = {
+    _CATEGORIES: ClassVar[dict[str, list[tuple[str, str]]]] = {
         "Operators": [
             ("=", "Equal"),
             ("!=", "Not equal"),
@@ -316,6 +312,7 @@ class SQLFilterDialog(QDialog):
     }
 
     def _populate_expression_tree(self) -> None:
+        """Build the function/operator tree from _CATEGORIES."""
         self._expr_tree.clear()
         for category, funcs in self._CATEGORIES.items():
             cat_item = QTreeWidgetItem([category])
@@ -328,6 +325,7 @@ class SQLFilterDialog(QDialog):
             self._expr_tree.addTopLevelItem(cat_item)
 
     def _filter_tree(self, text: str) -> None:
+        """Filter the expression tree by the search text."""
         txt = text.lower()
         for i in range(self._expr_tree.topLevelItemCount()):
             cat = self._expr_tree.topLevelItem(i)
@@ -371,6 +369,7 @@ class SQLFilterDialog(QDialog):
         self._editor.setFocus()
 
     def _validate(self) -> None:
+        """Parse the current expression and report feature match count."""
         if not self._current_layer:
             self._set_result("No layer selected.", "error")
             return
@@ -378,7 +377,8 @@ class SQLFilterDialog(QDialog):
         expr_text = self._editor.toPlainText().strip()
         if not expr_text:
             self._set_result(
-                "Empty expression – all features will be exported.", "info"
+                "Empty expression - all features will be exported.",
+                "info",
             )
             return
 
@@ -392,20 +392,18 @@ class SQLFilterDialog(QDialog):
         total = self._current_layer.featureCount()
         pct = (100.0 * matched / total) if total > 0 else 0.0
         self._set_result(
-            f"Valid - {matched} of {total} features match ({pct:.1f}%)", "ok"
+            f"Valid - {matched} of {total} features match ({pct:.1f}%)",
+            "ok",
         )
 
     def _set_result(self, msg: str, kind: str) -> None:
-        colors = {
-            "ok": "#27ae60",
-            "error": "#c0392b",
-            "info": "#2980b9",
-        }
+        """Set the validation result label with colour coding."""
+        colors = {"ok": "#27ae60", "error": "#c0392b", "info": "#2980b9"}
         bg = colors.get(kind, "#888")
         self._result_label.setText(msg)
         self._result_label.setStyleSheet(
             f"color:white; font-size:9pt; padding:6px; "
-            f"border-radius:3px; background:{bg};"
+            f"border-radius:3px; background:{bg};",
         )
 
     def _clear(self) -> None:
@@ -413,6 +411,7 @@ class SQLFilterDialog(QDialog):
         self._result_label.setText("")
 
     def _apply(self) -> None:
+        """Apply the current expression as a filter on the selected layer."""
         if not self._current_layer:
             QMessageBox.warning(self, "No Layer", "Please select a layer first.")
             return
@@ -434,6 +433,6 @@ class SQLFilterDialog(QDialog):
         self.filter_applied.emit(layer_id, expr_text)
         self.accept()
 
-    def get_all_filters(self) -> Dict[str, str]:
+    def get_all_filters(self) -> dict[str, str]:
         """Return a copy of the full filter dict."""
         return dict(self.current_filters)

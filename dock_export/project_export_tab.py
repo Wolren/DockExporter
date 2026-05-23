@@ -2,7 +2,8 @@
 
 Two modes:
   - .woof archive: custom binary format with deduplication
-  - ZIP archive: standard .zip file with source files + project"""
+  - ZIP archive: standard .zip file with source files + project
+"""
 
 from __future__ import annotations
 
@@ -11,9 +12,16 @@ import os
 import shutil
 import tempfile
 import zipfile
-from typing import Dict, List, Optional, Set, Tuple
 
-
+from osgeo import gdal
+from qgis.core import (
+    QgsApplication,
+    QgsMapLayer,
+    QgsProject,
+    QgsRasterLayer,
+    QgsSettings,
+    QgsVectorLayer,
+)
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import (
@@ -37,16 +45,10 @@ from qgis.PyQt.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from qgis.core import (
-    QgsApplication,
-    QgsMapLayer,
-    QgsProject,
-    QgsRasterLayer,
-    QgsVectorLayer,
-)
 
+from ._utils import collect_sidecar_files
 from .export_engine import layer_export_block_reason
-from .woof import pack_woof_to_file, pack_woof, unpack_woof
+from .woof import pack_woof_to_file
 
 logger = logging.getLogger("DockExport.ProjectExport")
 
@@ -69,7 +71,7 @@ class _CappedTableWidget(QTableWidget):
         return hint
 
 
-def _source_file_path(layer: QgsMapLayer) -> Optional[str]:
+def _source_file_path(layer: QgsMapLayer) -> str | None:
     """Extract the main source file path from a layer, or None if not file-based."""
     raw = layer.source() or ""
     src = raw.split("|")[0].strip()
@@ -92,7 +94,7 @@ def _source_file_path(layer: QgsMapLayer) -> Optional[str]:
             "https://",
             "postgresql:",
             "postgis:",
-        )
+        ),
     ):
         return None
     if not os.path.isabs(src):
@@ -105,16 +107,14 @@ def _source_file_path(layer: QgsMapLayer) -> Optional[str]:
     return None
 
 
-def _collect_source_files(layers: List[QgsMapLayer]) -> Dict[str, List[str]]:
+def _collect_source_files(layers: list[QgsMapLayer]) -> dict[str, list[str]]:
     """Collect all underlying files for each source path.
 
     Uses GDAL GetFileList to find companion files (e.g. .shx, .dbf for .shp).
     Returns {source_path: [list_of_file_paths]}.
     """
-    from osgeo import gdal
-
-    collected: Dict[str, List[str]] = {}
-    seen: Set[str] = set()
+    collected: dict[str, list[str]] = {}
+    seen: set[str] = set()
 
     for layer in layers:
         src = _source_file_path(layer)
@@ -132,8 +132,8 @@ def _collect_source_files(layers: List[QgsMapLayer]) -> Dict[str, List[str]]:
                 if fl:
                     collected[norm] = [os.path.normpath(f) for f in fl]
                     continue
-        except Exception:
-            pass
+        except Exception:  # noqa: S110
+            pass  # gdal may fail for unsupported formats; fall through
 
         # Fallback: just the source file itself
         collected[norm] = [norm]
@@ -141,32 +141,13 @@ def _collect_source_files(layers: List[QgsMapLayer]) -> Dict[str, List[str]]:
     return collected
 
 
-_SIDECAR_EXTS = frozenset(
-    {".qml", ".sld", ".tfw", ".pgw", ".jgw", ".gw", ".wld", ".aux.xml"}
-)
-
-
-def _collect_sidecar_files(file_paths: List[str]) -> List[str]:
-    """Find companion files (QML, SLD, world files) alongside source files."""
-    found: List[str] = []
-    seen = set(file_paths)
-    for fp in file_paths:
-        base, _ = os.path.splitext(fp)
-        for ext in _SIDECAR_EXTS:
-            companion = base + ext
-            if os.path.isfile(companion) and companion not in seen:
-                found.append(companion)
-                seen.add(companion)
-    return found
-
-
-def _collect_project_resources() -> List[str]:
+def _collect_project_resources() -> list[str]:
     """Scan the project for external files referenced outside of layers.
 
     Catches layout picture sources, HTML files, SVGs, report templates,
     and any file path exposed by QgsLayoutItem subclasses.
     """
-    resources: List[str] = []
+    resources: list[str] = []
     mgr = QgsProject.instance().layoutManager()
     if not mgr:
         return resources
@@ -198,18 +179,21 @@ def _collect_project_resources() -> List[str]:
                     if svg and os.path.isfile(svg):
                         resources.append(os.path.normpath(svg))
 
-            except Exception:
-                pass
+            except Exception:  # noqa: S110
+                pass  # non-critical resource introspection; skip on failure
 
         # External layout templates referenced by the layout itself
         try:
             template = layout.templatePath()
             if template and os.path.isfile(template):
                 resources.append(os.path.normpath(template))
-        except Exception:
-            pass
+        except Exception:  # noqa: S110
+            pass  # template path may fail for broken layouts; skip
 
     return list(dict.fromkeys(resources))
+
+
+SETTINGS_ROOT = "DockExport"
 
 
 class ProjectExportTab(QWidget):
@@ -226,9 +210,51 @@ class ProjectExportTab(QWidget):
         self._mode = "woof"  # "woof" or "zip"
         self._compression = 1  # 0=None 1=Normal 2=Heavy
         self._build_ui()
+        self._load_settings()
         self._refresh_table()
 
-    # ── UI ──────────────────────────────────────────────────────────
+    def _load_settings(self) -> None:
+        s = QgsSettings()
+        s.beginGroup(SETTINGS_ROOT)
+        s.beginGroup("ProjectExport")
+
+        path = s.value("path", "", str)
+        if path:
+            self._path_edit.setText(path)
+
+        mode = s.value("mode", "woof", str)
+        if mode == "zip":
+            self._zip_rb.setChecked(True)
+        else:
+            self._woof_rb.setChecked(True)
+        self._on_mode_toggled()
+
+        compression = s.value("compression", 1, int)
+        self._compress_combo.setCurrentIndex(compression)
+        self._compression = compression
+
+        s.endGroup()
+        s.endGroup()
+
+    def save_settings(self) -> None:
+        s = QgsSettings()
+        s.beginGroup(SETTINGS_ROOT)
+        s.beginGroup("ProjectExport")
+
+        s.setValue("path", self._path_edit.text().strip())
+        s.setValue("mode", self._mode)
+        s.setValue("compression", self._compression)
+
+        s.endGroup()
+        s.endGroup()
+        s.sync()
+
+    def reset_settings(self) -> None:
+        self._path_edit.clear()
+        self._woof_rb.setChecked(True)
+        self._compress_combo.setCurrentIndex(1)
+        self._compression = 1
+        self.save_settings()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -262,7 +288,8 @@ class ProjectExportTab(QWidget):
         sel_row.addWidget(none_btn, 1)
         refresh_btn = QPushButton("Refresh")
         refresh_btn.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
         )
         refresh_btn.clicked.connect(self._on_refresh)
         sel_row.addWidget(refresh_btn, 1)
@@ -286,7 +313,7 @@ class ProjectExportTab(QWidget):
         # Compression level (woof only)
         self._compress_combo = QComboBox()
         self._compress_combo.addItems(
-            ["No compression", "Normal compression", "Heavy compression"]
+            ["No compression", "Normal compression", "Heavy compression"],
         )
         self._compress_combo.setCurrentIndex(1)  # Normal
         self._compress_combo.currentIndexChanged.connect(self._on_compress_changed)
@@ -327,6 +354,7 @@ class ProjectExportTab(QWidget):
         self._sync_ui_to_mode()
 
     def _on_mode_toggled(self) -> None:
+        """Update internal mode and sync the UI on radio button toggle."""
         self._mode = "woof" if self._woof_rb.isChecked() else "zip"
         self._sync_ui_to_mode()
         self._path_edit.clear()
@@ -342,13 +370,17 @@ class ProjectExportTab(QWidget):
         is_woof = self._mode == "woof"
         self._compress_combo.setVisible(is_woof)
         self._path_edit.setPlaceholderText(
-            "Select .woof output path..." if is_woof else "Select .zip output path..."
+            "Select .woof output path..." if is_woof else "Select .zip output path...",
         )
 
     def _browse_path(self) -> None:
+        """Open a save-file dialog for .woof or .zip depending on the current mode."""
         if self._mode == "woof":
             path, _ = QFileDialog.getSaveFileName(
-                self, "Save project archive", "", "Woof archive (*.woof);;All Files (*)"
+                self,
+                "Save project archive",
+                "",
+                "Woof archive (*.woof);;All Files (*)",
             )
             if path:
                 if not path.lower().endswith(".woof"):
@@ -365,8 +397,6 @@ class ProjectExportTab(QWidget):
                 if not path.lower().endswith(".zip"):
                     path += ".zip"
                 self._path_edit.setText(path)
-
-    # ── Table ───────────────────────────────────────────────────────
 
     def check_all(self) -> None:
         self._table.selectAll()
@@ -389,7 +419,7 @@ class ProjectExportTab(QWidget):
                 icon
                 if not icon.isNull()
                 else QApplication.style().standardIcon(
-                    QStyle.StandardPixmap.SP_FileIcon
+                    QStyle.StandardPixmap.SP_FileIcon,
                 )
             )
         if isinstance(layer, QgsRasterLayer):
@@ -398,11 +428,11 @@ class ProjectExportTab(QWidget):
                 icon
                 if not icon.isNull()
                 else QApplication.style().standardIcon(
-                    QStyle.StandardPixmap.SP_DriveHDIcon
+                    QStyle.StandardPixmap.SP_DriveHDIcon,
                 )
             )
         return QApplication.style().standardIcon(
-            QStyle.StandardPixmap.SP_FileDialogDetailedView
+            QStyle.StandardPixmap.SP_FileDialogDetailedView,
         )
 
     def _refresh_table(self) -> None:
@@ -460,10 +490,8 @@ class ProjectExportTab(QWidget):
             parts.append(f"{scratch} scratch")
         self._info_label.setText(", ".join(parts))
 
-    # ── Export dispatch ─────────────────────────────────────────────
-
-    def _get_checked_layers(self) -> List[QgsMapLayer]:
-        result: List[QgsMapLayer] = []
+    def _get_checked_layers(self) -> list[QgsMapLayer]:
+        result: list[QgsMapLayer] = []
         model = self._table.selectionModel()
         if not model:
             return result
@@ -494,10 +522,8 @@ class ProjectExportTab(QWidget):
         else:
             self._do_zip_export(out_path, layers)
 
-    # ── Archive packaging (shared between .woof and .zip) ───────────
-
     @staticmethod
-    def _find_common_parent(paths: List[str]) -> str:
+    def _find_common_parent(paths: list[str]) -> str:
         """Find the longest common parent directory across all paths.
 
         Falls back to the project directory, then to the first path's drive root.
@@ -519,8 +545,9 @@ class ProjectExportTab(QWidget):
         return drive + os.sep if drive else os.path.sep
 
     def _prepare_archive_bundle(
-        self, layers: List[QgsMapLayer]
-    ) -> Optional[Tuple[List[str], Dict[str, str], str, List[str], List[str]]]:
+        self,
+        layers: list[QgsMapLayer],
+    ) -> tuple[list[str], dict[str, str], str, list[str], list[str]] | None:
         """Collect source files, save project with rewritten datasources.
 
         Remote layers preserve their original datasource URLs in the project XML.
@@ -533,19 +560,19 @@ class ProjectExportTab(QWidget):
         self._progress.setValue(0)
         self._info_label.setText("Collecting source files...")
 
-        errors: List[str] = []
-        remote_names: List[str] = []
+        errors: list[str] = []
+        remote_names: list[str] = []
 
         # 1. Collect file-based sources
         self._progress.setValue(5)
         source_map = _collect_source_files(layers)
         all_files = list(
-            dict.fromkeys(f for flist in source_map.values() for f in flist)
+            dict.fromkeys(f for flist in source_map.values() for f in flist),
         )
 
         # 2. Collect companion sidecar files (QML/SLD styles, world files)
         self._progress.setValue(10)
-        all_files.extend(_collect_sidecar_files(all_files))
+        all_files.extend(collect_sidecar_files(all_files))
 
         # 3. Collect project-wide external resources (layout images, SVGs, HTML)
         self._progress.setValue(15)
@@ -564,7 +591,7 @@ class ProjectExportTab(QWidget):
             # 5. Build path map (remote layers preserve their original datasource URLs)
             self._progress.setValue(30)
             common_parent = self._find_common_parent(all_files) if all_files else tmpdir
-            path_map: Dict[str, str] = {}
+            path_map: dict[str, str] = {}
             for filepath in all_files:
                 if not os.path.exists(filepath):
                     errors.append(f"Missing: {filepath}")
@@ -591,7 +618,8 @@ class ProjectExportTab(QWidget):
             self._info_label.setText("Saving project file...")
             QgsApplication.processEvents()
             if not QgsProject.instance().write(proj_path):
-                raise RuntimeError("Failed to save project file")
+                msg = "Failed to save project file"
+                raise RuntimeError(msg)  # noqa: TRY301
 
             # 7. Rewrite datasource paths in XML
             self._progress.setValue(85)
@@ -607,7 +635,7 @@ class ProjectExportTab(QWidget):
 
         return all_files, path_map, tmpdir, errors, remote_names
 
-    def _do_woof_export(self, woof_path: str, layers: List[QgsMapLayer]) -> None:
+    def _do_woof_export(self, woof_path: str, layers: list[QgsMapLayer]) -> None:
         result = self._prepare_archive_bundle(layers)
         if result is None:
             return
@@ -651,7 +679,7 @@ class ProjectExportTab(QWidget):
 
         self._finish_export(woof_path, len(path_map), errors, remote_names)
 
-    def _do_zip_export(self, zip_path: str, layers: List[QgsMapLayer]) -> None:
+    def _do_zip_export(self, zip_path: str, layers: list[QgsMapLayer]) -> None:
         result = self._prepare_archive_bundle(layers)
         if result is None:
             return
@@ -687,8 +715,8 @@ class ProjectExportTab(QWidget):
         self,
         out_path: str,
         count: int,
-        errors: List[str],
-        remote_names: List[str],
+        errors: list[str],
+        remote_names: list[str],
     ) -> None:
         self._info_label.setText("Done")
         lines = [f"Packaged {count} source files into:", f"  {out_path}"]
@@ -705,12 +733,12 @@ class ProjectExportTab(QWidget):
         self._export_btn.setEnabled(True)
 
     @staticmethod
-    def _rewrite_project_sources(proj_path: str, path_map: Dict[str, str]) -> None:
+    def _rewrite_project_sources(proj_path: str, path_map: dict[str, str]) -> None:
         """Rewrite datasource paths in a .qgs file to point into the archive."""
         proj_src = QgsProject.instance().fileName()
         original_proj_dir = os.path.dirname(proj_src) if proj_src else None
 
-        with open(proj_path, "r", encoding="utf-8") as f:
+        with open(proj_path, encoding="utf-8") as f:
             xml = f.read()
 
         # Replace original absolute paths with archive-relative paths
@@ -720,7 +748,8 @@ class ProjectExportTab(QWidget):
             if original_proj_dir:
                 try:
                     rel = os.path.relpath(orig_path, original_proj_dir).replace(
-                        "\\", "/"
+                        "\\",
+                        "/",
                     )
                     if rel != abs_form:
                         xml = xml.replace(rel, arcname)
@@ -729,10 +758,12 @@ class ProjectExportTab(QWidget):
 
         # Force project to use paths relative to project file
         xml = xml.replace(
-            '<Relative type="int">0</Relative>', '<Relative type="int">2</Relative>'
+            '<Relative type="int">0</Relative>',
+            '<Relative type="int">2</Relative>',
         )
         xml = xml.replace(
-            '<Relative type="int">1</Relative>', '<Relative type="int">2</Relative>'
+            '<Relative type="int">1</Relative>',
+            '<Relative type="int">2</Relative>',
         )
 
         with open(proj_path, "w", encoding="utf-8") as f:

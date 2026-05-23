@@ -1,7 +1,8 @@
+/// Integration tests for .woof v2 and v3 format roundtrips, integrity checks, and
+/// cross-version rejection.
 use std::collections::HashMap;
 
-// ── v2 backward compat ───────────────────────────────────────────
-
+/// v2 roundtrip without compression preserves data.
 #[test]
 fn test_v2_roundtrip_no_compress() {
     let entries = vec![
@@ -17,6 +18,7 @@ fn test_v2_roundtrip_no_compress() {
     assert_eq!(map.get("b.txt").map(|v| v.as_slice()), Some(&b"world"[..]));
 }
 
+/// v2 roundtrip with compression preserves data.
 #[test]
 fn test_v2_roundtrip_compress() {
     let data = "A".repeat(1000);
@@ -28,6 +30,7 @@ fn test_v2_roundtrip_compress() {
     assert_eq!(unpacked[0].1, data.as_bytes());
 }
 
+/// v2 output is deterministic regardless of input order.
 #[test]
 fn test_v2_deterministic() {
     let entries1 = vec![
@@ -47,6 +50,7 @@ fn test_v2_deterministic() {
     );
 }
 
+/// v2 rejects invalid magic bytes.
 #[test]
 fn test_v2_invalid_magic() {
     let data = b"NOTWOOF".to_vec();
@@ -54,8 +58,7 @@ fn test_v2_invalid_magic() {
     assert!(result.is_err());
 }
 
-// ── v3 seek table + integrity ────────────────────────────────────
-
+/// v3 roundtrip without compression preserves data.
 #[test]
 fn test_v3_roundtrip_no_compress() {
     let entries = vec![
@@ -71,6 +74,7 @@ fn test_v3_roundtrip_no_compress() {
     assert_eq!(map.get("b.txt").map(|v| v.as_slice()), Some(&b"world"[..]));
 }
 
+/// v3 roundtrip with compression preserves data.
 #[test]
 fn test_v3_roundtrip_compress() {
     let data = "A".repeat(1000);
@@ -82,6 +86,7 @@ fn test_v3_roundtrip_compress() {
     assert_eq!(unpacked[0].1, data.as_bytes());
 }
 
+/// v3 output is deterministic regardless of input order.
 #[test]
 fn test_v3_deterministic() {
     let entries1 = vec![
@@ -98,6 +103,7 @@ fn test_v3_deterministic() {
     assert_eq!(r1, r2, "v3 output should be deterministic");
 }
 
+/// v3 rejects invalid magic bytes.
 #[test]
 fn test_v3_invalid_magic() {
     let data = b"NOTWOOF".to_vec();
@@ -105,6 +111,7 @@ fn test_v3_invalid_magic() {
     assert!(result.is_err());
 }
 
+/// Highly compressible data is always compressed in v3.
 #[test]
 fn test_v3_always_compress() {
     let entries = vec![("raster.tif".into(), vec![0u8; 500])];
@@ -117,14 +124,14 @@ fn test_v3_always_compress() {
     );
 }
 
+/// Tampering with the payload after packing is detected by per-entry xxhash checksums.
 #[test]
 fn test_v3_integrity_check() {
     let entries = vec![("a.txt".into(), b"hello".to_vec())];
 
     let mut result = _native_impl::pack::pack_v3(entries, false, 3).unwrap();
-    // Tamper with payload
     let payload_offset = u64::from_le_bytes(result[24..32].try_into().unwrap()) as usize;
-    result[payload_offset] ^= 0xFF; // flip a byte
+    result[payload_offset] ^= 0xFF;
 
     let unpack_result = _native_impl::unpack::unpack_v3(&result);
     assert!(unpack_result.is_err(), "should detect tampered data");
@@ -137,6 +144,7 @@ fn test_v3_integrity_check() {
     );
 }
 
+/// Single-entry extraction by name works correctly.
 #[test]
 fn test_v3_unpack_one() {
     let entries = vec![
@@ -153,6 +161,7 @@ fn test_v3_unpack_one() {
     assert_eq!(z, b"last");
 }
 
+/// Requesting a non-existent entry returns an error.
 #[test]
 fn test_v3_unpack_one_not_found() {
     let entries = vec![("a.txt".into(), b"data".to_vec())];
@@ -162,9 +171,9 @@ fn test_v3_unpack_one_not_found() {
     assert!(err.is_err());
 }
 
+/// v3 unpacker rejects v2 archives and vice versa.
 #[test]
 fn test_v3_v2_incompatible() {
-    // v3 unpack should reject v2 data and vice versa
     let entries = vec![("a.txt".into(), b"data".to_vec())];
 
     let v2_data = _native_impl::pack::pack_v2(entries.clone(), false, 3).unwrap();
@@ -180,6 +189,8 @@ fn test_v3_v2_incompatible() {
     );
 }
 
+/// Parse a v3 archive into its header, seek entries, and payload sections.
+#[allow(dead_code)]
 fn parse_v3(data: &[u8]) -> (&[u8], Vec<_native_impl::entry::SeekEntry>, &[u8]) {
     use _native_impl::entry::*;
     let seek_offset = u64::from_le_bytes(data[16..24].try_into().unwrap()) as usize;

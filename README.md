@@ -35,17 +35,17 @@ It's a shortcut for: *I need to get data out of QGIS without busywork.*
 
 ```mermaid
 flowchart LR
-    L[Project Layers] --> LTW[LayerTableWidget]
-    LTW --> SPECS[ExportSpec[]]
-    SPECS -->|Single Files| ENG[ExportEngine]
-    SPECS -->|GeoPackage| ENG
-    SPECS -->|Project Export| PET[ProjectExportTab]
+    L["Project Layers"] --> LTW["LayerTableWidget"]
+    LTW --> SPECS["ExportSpec[]"]
+    SPECS -->|"Single Files"| ENG["ExportEngine"]
+    SPECS -->|"GeoPackage"| ENG
+    SPECS -->|"Project Export"| PET["ProjectExportTab"]
 
-    ENG --> SF[Single Files\n.gpkg .shp .tif ...]
-    ENG --> GPKG[Multi-layer\nGeoPackage]
+    ENG --> SF["Single Files<br>.gpkg .shp .tif ..."]
+    ENG --> GPKG["Multi-layer<br>GeoPackage"]
 
-    PET --> WOOF[.woof archive\nv3 Rust]
-    PET --> ZIP[ZIP archive]
+    PET --> WOOF[".woof archive<br>v3 Rust"]
+    PET --> ZIP["ZIP archive"]
 ```
 
 ---

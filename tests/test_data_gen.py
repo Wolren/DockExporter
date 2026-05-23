@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import os
 import random
-from typing import Dict, List
-
 
 # ── Helpers ──────────────────────────────────────────────────────
 
@@ -100,7 +98,9 @@ def _make_expression_xml(name: str) -> str:
 
 
 def _make_pipe_xml(
-    symbol_refs: List[str], ramp_refs: List[str], expr_refs: List[str]
+    symbol_refs: list[str],
+    ramp_refs: list[str],
+    expr_refs: list[str],
 ) -> str:
     """Generate a QGIS pipe/renderer XML referencing existing resources."""
     lines = ["<pipe>"]
@@ -133,6 +133,7 @@ def generate_qgs_project(
 
     Returns:
         Complete .qgs XML string.
+
     """
     rng = random.Random(42)
 
@@ -180,7 +181,7 @@ def generate_qgs_project(
             f"  <id>layer_{layer_id}</id>\n"
             f"  <name>Layer {layer_id}</name>\n"
             f"  {_make_pipe_xml(sym_refs, ramp_refs, expr_refs)}\n"
-            f"</maplayer>"
+            f"</maplayer>",
         )
 
     symbols_block = "\n".join(f"  {x}" for x in symbols_xml)
@@ -206,7 +207,6 @@ def generate_qml_style(num_symbols: int = 3) -> str:
     rng = random.Random(num_symbols)
     syms = []
     for i in range(num_symbols):
-        name = _SYMBOL_NAMES[(num_symbols * 7 + i) % len(_SYMBOL_NAMES)]
         color = _SYMBOL_COLORS[rng.randint(0, len(_SYMBOL_COLORS) - 1)]
         syms.append(_make_symbol_xml(f"style_sym_{i}", color))
     sym_block = "\n".join(f"  {s}" for s in syms)
@@ -227,7 +227,7 @@ def generate_geojson(num_features: int = 10) -> str:
             '}, "properties": {'
             f'"id": {i}, "value": {val}, '
             f'"name": "feature_{i}"'
-            "} }"
+            "} }",
         )
     return (
         '{\n"type": "FeatureCollection",\n"features": [\n'
@@ -257,20 +257,26 @@ def generate_csv(num_rows: int = 50) -> str:
 # ── Pre-built test suites ────────────────────────────────────────
 
 
-def make_standard_test_set() -> Dict[str, bytes]:
+def make_standard_test_set() -> dict[str, bytes]:
     """Create a standard dict of entries simulating a typical GIS project.
 
     Returns a dict mapping arcname → content (bytes) suitable for pack_woof().
     """
-    entries: Dict[str, bytes] = {}
+    entries: dict[str, bytes] = {}
 
     # Projects
     entries["project.qgs"] = generate_qgs_project(
-        num_layers=8, shared_symbols=4, shared_ramps=3, shared_exprs=2
+        num_layers=8,
+        shared_symbols=4,
+        shared_ramps=3,
+        shared_exprs=2,
     ).encode("utf-8")
 
     entries["subdir/second_project.qgs"] = generate_qgs_project(
-        num_layers=3, shared_symbols=2, shared_ramps=1, shared_exprs=1
+        num_layers=3,
+        shared_symbols=2,
+        shared_ramps=1,
+        shared_exprs=1,
     ).encode("utf-8")
 
     # Styles (shared symbols with projects above)
@@ -296,12 +302,12 @@ def make_standard_test_set() -> Dict[str, bytes]:
     # Small aux files
     entries["project.qgs.prj"] = b"WGS 84"
     entries["metadata.xml"] = (
-        "<metadata>\n"
-        "  <title>Test GIS Dataset</title>\n"
-        "  <date>2026-05-21</date>\n"
-        "  <abstract>A comprehensive test dataset for .woof compressor.</abstract>\n"
-        "</metadata>"
-    ).encode("utf-8")
+        b"<metadata>\n"
+        b"  <title>Test GIS Dataset</title>\n"
+        b"  <date>2026-05-21</date>\n"
+        b"  <abstract>A comprehensive test dataset for .woof compressor.</abstract>\n"
+        b"</metadata>"
+    )
 
     return entries
 
@@ -310,14 +316,16 @@ def make_colossal_test_set(
     num_qgs: int = 5,
     num_styles: int = 10,
     num_geojson: int = 10,
-    num_binaries: list[int] = [64, 256, 1024, 4096],
+    num_binaries: list[int] | None = None,
     shared_symbols: int = 8,
-) -> Dict[str, bytes]:
+) -> dict[str, bytes]:
     """Create a large test set for heavy benchmarks.
 
     Many projects share symbols via XML content similarity to stress-test dedup.
     """
-    entries: Dict[str, bytes] = {}
+    if num_binaries is None:
+        num_binaries = [64, 256, 1024, 4096]
+    entries: dict[str, bytes] = {}
 
     # Shared symbol templates (same content reused across many files)
     for i in range(num_qgs):
@@ -333,7 +341,7 @@ def make_colossal_test_set(
 
     for i in range(num_geojson):
         entries[f"data/features_{i:04d}.geojson"] = generate_geojson(200).encode(
-            "utf-8"
+            "utf-8",
         )
 
     for i, size_kb in enumerate(num_binaries):
@@ -343,7 +351,7 @@ def make_colossal_test_set(
     return entries
 
 
-def write_test_data_to_disk(target_dir: str, entries: Dict[str, bytes]) -> None:
+def write_test_data_to_disk(target_dir: str, entries: dict[str, bytes]) -> None:
     """Write entries dict to a directory tree on disk."""
     for arcname, content in entries.items():
         full_path = os.path.join(target_dir, arcname)
@@ -354,7 +362,7 @@ def write_test_data_to_disk(target_dir: str, entries: Dict[str, bytes]) -> None:
 
 def load_real_data_entries(
     base_dir: str | None = None,
-) -> Dict[str, bytes]:
+) -> dict[str, bytes]:
     """Walk real_data/ directory and load all files as entries.
 
     Args:
@@ -363,13 +371,14 @@ def load_real_data_entries(
     Returns:
         Dict mapping relative arcnames (using / separator) to content bytes.
         Returns empty dict if real_data/ does not exist or is empty.
+
     """
     if base_dir is None:
         base_dir = os.path.join(os.path.dirname(__file__), "real_data")
     if not os.path.isdir(base_dir):
         return {}
 
-    entries: Dict[str, bytes] = {}
+    entries: dict[str, bytes] = {}
     for dirpath, _dirnames, filenames in os.walk(base_dir):
         for fn in filenames:
             full = os.path.join(dirpath, fn)
@@ -394,18 +403,18 @@ def get_real_data_dir() -> str:
     return os.path.join(os.path.dirname(__file__), "real_data")
 
 
-def get_scenario_registry() -> Dict[str, Dict[str, bytes]]:
+def get_scenario_registry() -> dict[str, dict[str, bytes]]:
     """Return a dict of named scenarios for benchmarks."""
     return {
         "tiny": {
             "project.qgs": generate_qgs_project(num_layers=1, shared_symbols=1).encode(
-                "utf-8"
+                "utf-8",
             ),
             "data.geojson": generate_geojson(5).encode("utf-8"),
         },
         "small": {
             "project.qgs": generate_qgs_project(num_layers=3, shared_symbols=2).encode(
-                "utf-8"
+                "utf-8",
             ),
             "styles/style.qml": generate_qml_style(2).encode("utf-8"),
             "data.geojson": generate_geojson(20).encode("utf-8"),
@@ -414,7 +423,8 @@ def get_scenario_registry() -> Dict[str, Dict[str, bytes]]:
         "standard": make_standard_test_set(),
         "text_heavy": {
             f"text_{i:04d}.qgs": generate_qgs_project(
-                num_layers=8, shared_symbols=6
+                num_layers=8,
+                shared_symbols=6,
             ).encode("utf-8")
             for i in range(20)
         },
@@ -424,7 +434,8 @@ def get_scenario_registry() -> Dict[str, Dict[str, bytes]]:
         "mixed": dict(
             **{
                 f"project_{i:04d}.qgs": generate_qgs_project(
-                    num_layers=5, shared_symbols=4
+                    num_layers=5,
+                    shared_symbols=4,
                 ).encode("utf-8")
                 for i in range(10)
             },

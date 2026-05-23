@@ -27,12 +27,13 @@ import tempfile
 import time
 import tracemalloc
 import zipfile
-from typing import Dict, List, Tuple
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from dock_export.woof_python import (
     pack_woof as pack_woof_python,
+)
+from dock_export.woof_python import (
     unpack_woof as unpack_woof_python,
 )
 
@@ -46,9 +47,8 @@ except ImportError:
 
 from tests.test_data_gen import (
     get_scenario_registry,
-    make_standard_test_set,
-    make_colossal_test_set,
     load_real_data_entries,
+    make_colossal_test_set,
     real_data_available,
 )
 
@@ -56,7 +56,9 @@ from tests.test_data_gen import (
 _HAVE_RICH = False
 try:
     from rich.console import Console
+    from rich.layout import Layout
     from rich.live import Live
+    from rich.panel import Panel
     from rich.progress import (
         BarColumn,
         Progress,
@@ -67,18 +69,15 @@ try:
     )
     from rich.table import Table
     from rich.text import Text
-    from rich.panel import Panel
-    from rich.layout import Layout
 
     _HAVE_RICH = True
     _CONSOLE = Console()
 except ImportError:
     _CONSOLE = None
 
-
 # ── Type aliases ─────────────────────────────────────────────────
 
-Metrics = Dict[str, float | int | str]
+Metrics = dict[str, float | int | str]
 
 # ── Formatting helpers ───────────────────────────────────────────
 
@@ -142,7 +141,7 @@ def _mode_key(mode: str, compress: bool):
     return (mode, compress)
 
 
-def _modes_to_benchmark(quick: bool = False) -> List[Tuple[str, bool]]:
+def _modes_to_benchmark(quick: bool = False) -> list[tuple[str, bool]]:
     modes = [
         ("v2", False),
         ("v2", True),
@@ -160,7 +159,7 @@ def _modes_to_benchmark(quick: bool = False) -> List[Tuple[str, bool]]:
 
 
 def _bench_one(
-    entries: Dict[str, bytes],
+    entries: dict[str, bytes],
     mode: str,
     compress: bool,
     iterations: int = 3,
@@ -191,6 +190,7 @@ def _bench_one(
                 for name in zf.namelist():
                     result[name] = zf.read(name)
             return result
+
     elif mode == "rar":
         _rar_tmp = tempfile.mkdtemp(prefix="woof_rar_")
         _rar_src = os.path.join(_rar_tmp, "src")
@@ -205,7 +205,7 @@ def _bench_one(
         os.makedirs(_rar_extract, exist_ok=True)
         _rar_level = "5" if compress else "0"
 
-        def _pack(e):
+        def _pack(_e):
             if os.path.exists(_rar_archive):
                 os.remove(_rar_archive)
             subprocess.run(
@@ -246,19 +246,26 @@ def _bench_one(
                     with open(full, "rb") as f:
                         result[rel] = f.read()
             return result
+
     elif mode == "native":
-        _pack = lambda e: native_woof_impl.pack_v3_py(e, compress, 3)
+
+        def _pack(e):
+            return native_woof_impl.pack_v3_py(e, compress, 3)
+
         _unpack = native_woof_impl.unpack_v3_py
     else:
         kwargs: dict = {"compress": compress}
-        _pack = lambda e: pack_woof_python(e, **kwargs)
+
+        def _pack(e):
+            return pack_woof_python(e, **kwargs)
+
         _unpack = unpack_woof_python
 
     for _ in range(warmup):
         _ = _pack(entries)
 
-    pack_times: List[float] = []
-    pack_sizes: List[int] = []
+    pack_times: list[float] = []
+    pack_sizes: list[int] = []
     for _ in range(iterations):
         t0 = time.perf_counter()
         packed = _pack(entries)
@@ -288,7 +295,7 @@ def _bench_one(
     for _ in range(warmup):
         _ = _unpack(packed)
 
-    unpack_times: List[float] = []
+    unpack_times: list[float] = []
     for _ in range(iterations):
         t0 = time.perf_counter()
         result = _unpack(packed)
@@ -320,7 +327,7 @@ def _bench_one(
 
 
 def _build_live_table(
-    completed: List[Tuple[str, str, Metrics]],
+    completed: list[tuple[str, str, Metrics]],
     pending_count: int,
     current_label: str,
     elapsed: float,
@@ -341,7 +348,7 @@ def _build_live_table(
     table.add_column("Mem(P)", justify="right")
     table.add_column("Mem(U)", justify="right")
 
-    for scenario, mode_label, m in completed:
+    for _scenario, mode_label, m in completed:
         if m.get("error"):
             table.add_row(mode_label, "[red]FAILED[/red]", "", "", "", "", "", "")
         else:
@@ -373,14 +380,15 @@ def _build_live_table(
 
 
 def _build_bar_chart(
-    metrics_list: List[Metrics], title: str = "Compression Ratio"
+    metrics_list: list[Metrics],
+    title: str = "Compression Ratio",
 ) -> Panel:
     """Build a bar chart panel from completed metrics."""
     if not metrics_list:
         return Panel("No data yet", title=title)
 
     max_ratio = max(float(m["ratio"]) for m in metrics_list)
-    lines: List[str] = []
+    lines: list[str] = []
     for m in sorted(metrics_list, key=lambda x: float(x["ratio"]), reverse=True):
         label = _MODE_LABELS.get(
             _mode_key(m["mode"], m["compress"]),
@@ -395,8 +403,8 @@ def _build_bar_chart(
 def _build_summary_layout(
     scenario: str,
     raw_info: str,
-    scenario_metrics: List[Metrics],
-    all_metrics: Dict[str, List[Metrics]],
+    scenario_metrics: list[Metrics],
+    all_metrics: dict[str, list[Metrics]],
     status_text: str = "",
 ) -> Layout:
     """Build a rich Layout with scenario info, bar chart, and cross-scenario summary."""
@@ -433,13 +441,13 @@ def _build_summary_layout(
 
     # Bar chart
     chart_panel = _build_bar_chart(
-        scenario_metrics, f"Compression Ratio \u2014 {scenario}"
+        scenario_metrics,
+        f"Compression Ratio \u2014 {scenario}",
     )
     main_layout["chart"].update(chart_panel)
 
     # Cross-scenario summary
     cross_lines = ["[bold]Cross-Scenario Ratios[/bold]"]
-    fmt = "{:<16}  " + " ".join("{:>10}" for _ in range(len(scenario_metrics)))
     if scenario_metrics:
         headers = " ".join(
             f"{_MODE_LABELS.get(_mode_key(m['mode'], m['compress']), m['mode']):>10}"
@@ -462,8 +470,8 @@ def _build_summary_layout(
 def _plain_print_progress(
     scenario: str,
     label: str,
-    mode_idx: int,
-    total_modes: int,
+    _mode_idx: int,
+    _total_modes: int,
 ) -> None:
     sys.stdout.write(f"  [{scenario}] {label:<30} ... ")
     sys.stdout.flush()
@@ -487,16 +495,16 @@ _HEADER_SEP = "---"
 
 
 def _build_report(
-    all_metrics: Dict[str, List[Metrics]],
-    scenario_order: List[str],
+    all_metrics: dict[str, list[Metrics]],
+    scenario_order: list[str],
 ) -> str:
-    lines: List[str] = []
+    lines: list[str] = []
     lines.append("# .woof Compressor Benchmark Report")
     lines.append(f"\nGenerated: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append(f"\nPython: {sys.version}")
     lines.append(f"\nTotal scenarios: {len(scenario_order)}")
     lines.append(
-        f"Total benchmark configurations: {sum(len(v) for v in all_metrics.values())}"
+        f"Total benchmark configurations: {sum(len(v) for v in all_metrics.values())}",
     )
 
     for scenario in scenario_order:
@@ -508,7 +516,7 @@ def _build_report(
         lines.append(f"## Scenario: {scenario}")
         lines.append(
             f"\nEntries: {metrics_list[0]['entries']}, "
-            f"Raw size: {_human_bytes(metrics_list[0]['raw_size'])}"
+            f"Raw size: {_human_bytes(metrics_list[0]['raw_size'])}",
         )
 
         cols = [
@@ -524,13 +532,13 @@ def _build_report(
         headers = [c[0] for c in cols]
         widths = [c[1] for c in cols]
 
-        def _fmt_row(entries: List[str], w: List[int]) -> str:
+        def _fmt_row(entries: list[str], w: list[int]) -> str:
             parts = [f"{entries[0]:<{w[0]}}"]
             for i in range(1, len(entries)):
                 parts.append(f"{entries[i]:>{w[i]}}")
             return "| " + " | ".join(parts) + " |"
 
-        def _fmt_sep(w: List[int]) -> str:
+        def _fmt_sep(w: list[int]) -> str:
             return "|" + "|".join("-" * w_i for w_i in w) + "|"
 
         lines.append(f"\n{_fmt_row(headers, widths)}")
@@ -550,14 +558,15 @@ def _build_report(
                 _human_bytes(m["pack_memory_kb"] * 1024),
                 _human_bytes(m["unpack_memory_kb"] * 1024),
             ]
-            lines.append(_fmt_row([label] + row, widths))
+            lines.append(_fmt_row([label, *row], widths))
 
-        lines.append(f"\n**Ratio comparison (higher = better):**")
-        lines.append(f"\n| Mode | Ratio |")
-        lines.append(f"|------|-------|")
+        lines.append("\n**Ratio comparison (higher = better):**")
+        lines.append("\n| Mode | Ratio |")
+        lines.append("|------|-------|")
         for m in sorted(metrics_list, key=lambda x: x["ratio"], reverse=True):
             label = _MODE_LABELS.get(
-                _mode_key(m["mode"], m["compress"]), f"{m['mode']}"
+                _mode_key(m["mode"], m["compress"]),
+                f"{m['mode']}",
             )
             lines.append(f"| {label} | {m['ratio']:.2f}x |")
 
@@ -569,12 +578,13 @@ def _build_report(
         cross_headers = [("Scenario", 20)]
         for m in first_scenario_metrics:
             label = _MODE_LABELS.get(
-                _mode_key(m["mode"], m["compress"]), f"{m['mode']}"
+                _mode_key(m["mode"], m["compress"]),
+                f"{m['mode']}",
             )
             cross_headers.append((label, max(len(label) + 2, 16)))
         cw = [ch[1] for ch in cross_headers]
 
-        def _cross_row(entries: List[str]) -> str:
+        def _cross_row(entries: list[str]) -> str:
             parts = [f"{entries[0]:<{cw[0]}}"]
             for i in range(1, len(entries)):
                 parts.append(f"{entries[i]:>{cw[i]}}")
@@ -590,7 +600,7 @@ def _build_report(
             if not metrics_list:
                 continue
             ratios = [f"{m['ratio']:>16.3f}" for m in metrics_list]
-            lines.append(_cross_row([scenario] + ratios))
+            lines.append(_cross_row([scenario, *ratios]))
 
     # Recommendations
     lines.append(f"\n{_HEADER_SEP}")
@@ -615,7 +625,7 @@ def _build_report(
     lines.append(f"- **Best compression ratio**: {best_ratio:.3f}x ({best_mode})")
     lines.append(f"- **Fastest pack**: {_human_time(best_speed)} ({best_speed_mode})")
     lines.append(
-        f"- **Lowest memory**: {_human_bytes(best_mem * 1024)} ({best_mem_mode})"
+        f"- **Lowest memory**: {_human_bytes(best_mem * 1024)} ({best_mem_mode})",
     )
 
     return "\n".join(lines)
@@ -711,7 +721,10 @@ def main() -> None:
     registry = get_scenario_registry()
     if args.colossal:
         registry["colossal"] = make_colossal_test_set(
-            num_qgs=20, num_styles=30, num_geojson=50, num_binaries=[512, 1024, 4096]
+            num_qgs=20,
+            num_styles=30,
+            num_geojson=50,
+            num_binaries=[512, 1024, 4096],
         )
         if args.scenario == "all":
             args.scenario = "colossal"
@@ -723,17 +736,17 @@ def main() -> None:
             if real_entries:
                 total_mb = sum(len(c) for c in real_entries.values()) / 1_048_576
                 print(
-                    f"  Loaded real data: {len(real_entries)} files, {total_mb:.1f} MB"
+                    f"  Loaded real data: {len(real_entries)} files, {total_mb:.1f} MB",
                 )
                 registry["real_data"] = real_entries
             else:
                 print(
-                    "  Warning: --real-data requested but real_data/3.12.2025/ is empty"
+                    "  Warning: --real-data requested but real_data/3.12.2025/ is empty",
                 )
         else:
             print(
                 "  Warning: --real-data requested but "
-                "tests/real_data/3.12.2025/ not found"
+                "tests/real_data/3.12.2025/ not found",
             )
 
     if args.scenario == "all":
@@ -773,25 +786,26 @@ def main() -> None:
     # ── Plain text run ───────────────────────────────────────────
     if not use_live:
         print(f"\n{'=' * 100}")
-        print(f"  .WOOF COMPRESSOR BENCHMARK")
+        print("  .WOOF COMPRESSOR BENCHMARK")
         print(f"  Scenarios: {', '.join(scenario_order)}")
         print(f"  Modes:     {', '.join(m[0] for m in all_modes)}")
         print(f"  Iterations per test: {args.iterations}")
         print(f"  Total tests: {total_tests}")
         print(f"{'=' * 100}\n")
 
-        all_metrics: Dict[str, List[Metrics]] = {}
+        all_metrics: dict[str, list[Metrics]] = {}
         for scenario in scenario_order:
             entries = registry[scenario]
             raw_mb = sum(len(c) for c in entries.values()) / 1_048_576
             print(
-                f"\n==> Scenario: [{scenario}] -- {len(entries)} files, {raw_mb:.1f} MB raw"
+                f"\n==> Scenario: [{scenario}] -- {len(entries)} files, {raw_mb:.1f} MB raw",
             )
 
-            scenario_metrics: List[Metrics] = []
+            scenario_metrics: list[Metrics] = []
             for mode, compress in all_modes:
                 label = _MODE_LABELS.get(
-                    _mode_key(mode, compress), f"{mode} c={compress}"
+                    _mode_key(mode, compress),
+                    f"{mode} c={compress}",
                 )
                 _plain_print_progress(scenario, label, 0, 0)
                 try:
@@ -818,7 +832,7 @@ def main() -> None:
                             "unpack_speed_mbps": 0,
                             "pack_memory_kb": 0,
                             "unpack_memory_kb": 0,
-                        }
+                        },
                     )
                     _plain_print_result({"error": str(e)}, failed=True)
 
@@ -870,7 +884,7 @@ def main() -> None:
     layout["progress"].update(progress_table)
 
     all_metrics = {}
-    completed_list: List[Tuple[str, str, Metrics]] = []
+    completed_list: list[tuple[str, str, Metrics]] = []
     start_time = time.time()
 
     # Calc total work
@@ -885,7 +899,8 @@ def main() -> None:
 
             scenario_metrics = []
             sc_task = scenario_progress.add_task(
-                f"[yellow]{scenario}", total=len(all_modes)
+                f"[yellow]{scenario}",
+                total=len(all_modes),
             )
 
             for mode, compress in all_modes:
@@ -954,7 +969,7 @@ def main() -> None:
                     }
                     scenario_metrics.append(err_metrics)
                     completed_list.append(
-                        (scenario, f"[red]{mode_label} FAILED[/red]", err_metrics)
+                        (scenario, f"[red]{mode_label} FAILED[/red]", err_metrics),
                     )
 
                 scenario_progress.update(sc_task, advance=1)
@@ -1000,9 +1015,7 @@ def main() -> None:
             if args.output
             else "tests/benchmark_report.html"
         )
-        from rich.console import Console as RichConsole
-
-        html_console = RichConsole(record=True)
+        html_console = Console(record=True)
         html_console.print(report)
         html_console.save_html(html_path)
         print(f"HTML report saved to: {html_path}")

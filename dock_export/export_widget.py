@@ -5,10 +5,17 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import Dict, List
+from contextlib import suppress
+from datetime import datetime
 
+from qgis.core import (
+    QgsCoordinateReferenceSystem,
+    QgsProject,
+    QgsRasterLayer,
+    QgsSettings,
+    QgsVectorLayer,
+)
 from qgis.PyQt.QtCore import QThread
-
 from qgis.PyQt.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -28,13 +35,6 @@ from qgis.PyQt.QtWidgets import (
     QTabWidget,
     QVBoxLayout,
     QWidget,
-)
-from qgis.core import (
-    QgsCoordinateReferenceSystem,
-    QgsProject,
-    QgsRasterLayer,
-    QgsSettings,
-    QgsVectorLayer,
 )
 
 from .export_engine import ExportResult, layer_export_block_reason
@@ -118,7 +118,7 @@ class FormatDialog(QDialog):
         layout.addWidget(ras_group)
 
         btn_box = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
         )
         btn_box.accepted.connect(self.accept)
         btn_box.rejected.connect(self.reject)
@@ -135,12 +135,13 @@ class ExportWidget(QWidget):
     """Tabbed export UI embedded in the dock. Builds ExportSpecs from table state."""
 
     def __init__(self, iface, parent=None):
+        """Build the UI, load persisted settings, populate layer tables, and connect project signals."""
         super().__init__(parent)
         self.iface = iface
-        self._filters: Dict[str, str] = {}
-        self._target_crs: Dict[str, str] = {}
+        self._filters: dict[str, str] = {}
+        self._target_crs: dict[str, str] = {}
         self._filter_dialog = None
-        self._log_entries: List[str] = []
+        self._log_entries: list[str] = []
         self._vector_selected: set[str] = {"GPKG"}
         self._raster_selected: set[str] = {"GTiff"}
 
@@ -157,6 +158,7 @@ class ExportWidget(QWidget):
         return name
 
     def _build_ui(self) -> None:
+        """Build the main layout: tabs, layer count label, progress bar, status, and action buttons."""
         root = QVBoxLayout(self)
         root.setSpacing(6)
         root.setContentsMargins(6, 6, 6, 6)
@@ -171,7 +173,7 @@ class ExportWidget(QWidget):
 
         self._layer_count_label = QLabel("")
         self._layer_count_label.setStyleSheet(
-            "font-size:9pt; color:#555; padding:2px 0;"
+            "font-size:9pt; color:#555; padding:2px 0;",
         )
         root.addWidget(self._layer_count_label)
 
@@ -200,7 +202,7 @@ class ExportWidget(QWidget):
 
         self._reset_all_btn = QPushButton("Reset All")
         self._reset_all_btn.setToolTip(
-            "Reset names, filters, CRS, format overrides, and settings"
+            "Reset names, filters, CRS, format overrides, and settings",
         )
         self._reset_all_btn.clicked.connect(self._reset_all)
         self._btn_row.addWidget(self._reset_all_btn)
@@ -213,7 +215,7 @@ class ExportWidget(QWidget):
         self._cancel_btn = QPushButton("Cancel")
         self._cancel_btn.setVisible(False)
         self._cancel_btn.setStyleSheet(
-            "background:#c0392b; color:white; font-weight:bold; padding:5px 18px;"
+            "background:#c0392b; color:white; font-weight:bold; padding:5px 18px;",
         )
         self._cancel_btn.clicked.connect(self._cancel_export)
         self._btn_row.addWidget(self._cancel_btn)
@@ -221,6 +223,7 @@ class ExportWidget(QWidget):
         root.addWidget(self._btn_widget)
 
     def _build_log_tab(self) -> QWidget:
+        """Build the History tab with a read-only log view and Clear button."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -241,10 +244,12 @@ class ExportWidget(QWidget):
         return tab
 
     def _clear_log(self) -> None:
+        """Clear the history log view and the internal entry list."""
         self._log_view.clear()
         self._log_entries.clear()
 
     def _build_single_tab(self) -> QWidget:
+        """Build the Single Files tab with layer table, select buttons, output config, and format options."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setSpacing(6)
@@ -265,7 +270,8 @@ class ExportWidget(QWidget):
         sel_row.addWidget(none_btn, 1)
         refresh_btn = QPushButton("Refresh")
         refresh_btn.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
         )
         refresh_btn.clicked.connect(self._refresh_layers)
         sel_row.addWidget(refresh_btn, 1)
@@ -297,7 +303,7 @@ class ExportWidget(QWidget):
         style_row.addWidget(QLabel("Style:"))
         self._single_style_combo = QComboBox()
         self._single_style_combo.addItems(
-            ["None", "QML", "SLD", "Both", "Embed in GPKG"]
+            ["None", "QML", "SLD", "Both", "Embed in GPKG"],
         )
         self._single_style_combo.setCurrentIndex(1)
         style_row.addWidget(self._single_style_combo)
@@ -308,7 +314,7 @@ class ExportWidget(QWidget):
         self._naming_template_edit = QLineEdit()
         self._naming_template_edit.setPlaceholderText("{layer_name}")
         self._naming_template_edit.setToolTip(
-            "Placeholders: {layer_name}, {date}, {time}, {crs}, {datetime}"
+            "Placeholders: {layer_name}, {date}, {time}, {crs}, {datetime}",
         )
         naming_row.addWidget(QLabel("Name pattern:"))
         naming_row.addWidget(self._naming_template_edit)
@@ -319,7 +325,7 @@ class ExportWidget(QWidget):
         naming_row.addWidget(hint_btn)
         apply_name_btn = QPushButton("Apply")
         apply_name_btn.setToolTip(
-            "Apply naming pattern to all export names in the table"
+            "Apply naming pattern to all export names in the table",
         )
         apply_name_btn.clicked.connect(self._apply_naming_template)
         naming_row.addWidget(apply_name_btn)
@@ -327,19 +333,19 @@ class ExportWidget(QWidget):
 
         self._single_replace_cb = QCheckBox("Replace source in project after export")
         self._single_replace_cb.setToolTip(
-            "Repoints the project layer to the new file; display name unchanged"
+            "Repoints the project layer to the new file; display name unchanged",
         )
         out_layout.addWidget(self._single_replace_cb)
 
         self._single_add_to_project_cb = QCheckBox("Add exported files to project")
         self._single_add_to_project_cb.setToolTip(
-            "Load exported files as new layers in the project"
+            "Load exported files as new layers in the project",
         )
         out_layout.addWidget(self._single_add_to_project_cb)
 
         self._single_keep_name_cb = QCheckBox("Keep original layer name")
         self._single_keep_name_cb.setToolTip(
-            "Use the source layer name instead of the export name when loading"
+            "Use the source layer name instead of the export name when loading",
         )
         out_layout.addWidget(self._single_keep_name_cb)
 
@@ -347,6 +353,7 @@ class ExportWidget(QWidget):
         return tab
 
     def _build_gpkg_tab(self) -> QWidget:
+        """Build the GeoPackage tab with layer table, select buttons, and output GeoPackage config."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setSpacing(6)
@@ -367,7 +374,8 @@ class ExportWidget(QWidget):
         sel_row.addWidget(none_btn, 1)
         refresh_btn = QPushButton("Refresh")
         refresh_btn.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
         )
         refresh_btn.clicked.connect(self._refresh_layers)
         sel_row.addWidget(refresh_btn, 1)
@@ -402,22 +410,22 @@ class ExportWidget(QWidget):
         opts_grid.addWidget(self._gpkg_replace_cb, 1, 1)
 
         self._gpkg_preserve_groups_cb = QCheckBox(
-            "Preserve layer groups in table names"
+            "Preserve layer groups in table names",
         )
         self._gpkg_preserve_groups_cb.setToolTip(
-            "Prefix GPKG table names with the layer tree group path"
+            "Prefix GPKG table names with the layer tree group path",
         )
         opts_grid.addWidget(self._gpkg_preserve_groups_cb, 2, 0)
 
         self._gpkg_add_to_project_cb = QCheckBox("Add exported layers to project")
         self._gpkg_add_to_project_cb.setToolTip(
-            "Load exported layers as new layers in the project"
+            "Load exported layers as new layers in the project",
         )
         opts_grid.addWidget(self._gpkg_add_to_project_cb, 2, 1)
 
         self._gpkg_keep_name_cb = QCheckBox("Keep original layer name")
         self._gpkg_keep_name_cb.setToolTip(
-            "Use the source layer name instead of the export name when loading"
+            "Use the source layer name instead of the export name when loading",
         )
         opts_grid.addWidget(self._gpkg_keep_name_cb, 3, 0)
 
@@ -426,10 +434,12 @@ class ExportWidget(QWidget):
         return tab
 
     def _build_project_tab(self) -> QWidget:
+        """Create the project archive export tab (.woof / ZIP)."""
         self._project_tab = ProjectExportTab(self.iface, self)
         return self._project_tab
 
     def _connect_project_signals(self) -> None:
+        """Connect to QGIS project signals (layers added/removed, project read) to auto-refresh tables."""
         self._connections = []
         proj = QgsProject.instance()
         for name in (
@@ -456,25 +466,24 @@ class ExportWidget(QWidget):
         for name in ("projectRead", "newProjectCreated"):
             sig = getattr(self.iface, name, None)
             if sig is not None:
-                try:
+                with suppress(TypeError):
                     sig.connect(self._on_layers_changed)
                     self._connections.append(sig)
-                except Exception:
-                    pass
 
     def disconnect_all(self) -> None:
         """Disconnect all project signals. Call from dock closeEvent."""
         self._save_settings()
+
         for sig in self._connections:
-            try:
+            with suppress(Exception):
                 sig.disconnect(self._on_layers_changed)
-            except Exception:
-                pass
 
     def _on_layers_changed(self, *_args) -> None:
+        """Rebuild all layer tables when the project layer list changes."""
         self._refresh_layers()
 
     def _refresh_layers(self) -> None:
+        """Re-populate all layer tables from the current QGIS project, preserving filters and CRS overrides."""
         all_layers = list(QgsProject.instance().mapLayers().values())
         valid_ids = {layer.id() for layer in all_layers}
         self._filters = {
@@ -499,6 +508,7 @@ class ExportWidget(QWidget):
         self._update_export_button_state()
 
     def _update_layer_count(self) -> None:
+        """Update the info label showing loaded/selected/filtered layer counts."""
         table = self._active_table()
         total = table.rowCount()
         selected = len(table.selected_layer_ids())
@@ -511,6 +521,7 @@ class ExportWidget(QWidget):
         self._layer_count_label.setText(", ".join(parts))
 
     def _has_vector_in_table(self) -> bool:
+        """Return True if at least one vector layer exists in the single table."""
         for row in range(self._single_table.rowCount()):
             lid = self._single_table._layer_id_for_row(row)
             if lid:
@@ -520,6 +531,7 @@ class ExportWidget(QWidget):
         return False
 
     def _has_raster_in_table(self) -> bool:
+        """Return True if at least one raster layer exists in the single table."""
         for row in range(self._single_table.rowCount()):
             lid = self._single_table._layer_id_for_row(row)
             if lid:
@@ -529,12 +541,14 @@ class ExportWidget(QWidget):
         return False
 
     def _update_single_formats(self) -> None:
+        """Show/hide the format configuration button based on available layer types."""
         has_vec = self._has_vector_in_table()
         has_ras = self._has_raster_in_table()
         if hasattr(self, "_fmt_btn"):
             self._fmt_btn.setVisible(has_vec or has_ras)
 
     def _update_format_button_text(self) -> None:
+        """Update the format button label to show selected vector/raster format counts."""
         vec = len(self._vector_selected)
         ras = len(self._raster_selected)
         parts = []
@@ -544,10 +558,11 @@ class ExportWidget(QWidget):
             parts.append(f"{ras} raster")
         if hasattr(self, "_fmt_btn"):
             self._fmt_btn.setText(
-                f"Formats ({', '.join(parts)})" if parts else "Configure formats"
+                f"Formats ({', '.join(parts)})" if parts else "Configure formats",
             )
 
     def _configure_formats(self) -> None:
+        """Open the format selection dialog and apply the chosen formats."""
         dlg = FormatDialog(self._vector_selected, self._raster_selected, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._vector_selected = dlg.get_vector_selected()
@@ -556,6 +571,7 @@ class ExportWidget(QWidget):
             self._update_export_button_state()
 
     def _update_export_button_state(self) -> None:
+        """Enable/disable the Export button based on current selections and inputs."""
         self._update_layer_count()
         table = self._active_table()
         has_selection = len(table.selected_layer_ids()) > 0
@@ -573,11 +589,13 @@ class ExportWidget(QWidget):
         self._export_btn.setEnabled(can_export)
 
     def _on_tab_changed(self, index: int) -> None:
+        """Update UI state when switching between Single Files and GeoPackage tabs."""
         self._update_layer_count()
         self._update_export_button_state()
         self._btn_widget.setVisible(index < 2)
 
     def _load_settings(self) -> None:
+        """Restore all persisted UI state from QgsSettings."""
         s = QgsSettings()
         s.beginGroup(SETTINGS_ROOT)
 
@@ -663,6 +681,7 @@ class ExportWidget(QWidget):
         s.endGroup()
 
     def _save_settings(self) -> None:
+        """Persist current UI state to QgsSettings."""
         s = QgsSettings()
         s.beginGroup(SETTINGS_ROOT)
 
@@ -693,7 +712,11 @@ class ExportWidget(QWidget):
         s.endGroup()
         s.sync()
 
+        if hasattr(self, "_project_tab"):
+            self._project_tab.save_settings()
+
     def _reset_all(self) -> None:
+        """Reset all filters, CRS overrides, export names, and UI settings to defaults."""
         reply = QMessageBox.question(
             self,
             "Reset All",
@@ -732,16 +755,20 @@ class ExportWidget(QWidget):
         self._update_format_button_text()
         self._clear_log()
         self._log_view.setPlainText("")
+        if hasattr(self, "_project_tab"):
+            self._project_tab.reset_settings()
         self._refresh_layers()
         self._save_settings()
 
     def _on_target_crs_changed(self, layer_id: str, authid: str) -> None:
+        """Propagate a CRS override change to both tables and the internal dict."""
         self._target_crs[layer_id] = authid
         for table in (self._single_table, self._gpkg_table):
             if table.get_target_crs(layer_id) != authid:
                 table.set_target_crs(layer_id, authid)
 
     def _open_filter_dialog(self) -> None:
+        """Open the SQL expression filter dialog for selected vector layers."""
         table = self._active_table()
         checked = table.get_selected_items()
 
@@ -760,22 +787,26 @@ class ExportWidget(QWidget):
             return
 
         dlg = SQLFilterDialog(
-            layer_items=vector_items, current_filters=self._filters, parent=self
+            layer_items=vector_items,
+            current_filters=self._filters,
+            parent=self,
         )
         dlg.filter_applied.connect(self._on_filter_applied)
         dlg.exec()
 
     def _on_filter_applied(self, layer_id: str, expression: str) -> None:
+        """Store a filter expression and update both tables."""
         self._filters[layer_id] = expression
         for table in (self._single_table, self._gpkg_table):
             table.set_filter(layer_id, expression)
         self._update_layer_count()
 
     def _reset_export_names(self) -> None:
+        """Revert all per-layer export names to their source layer names."""
         for table in (self._single_table, self._gpkg_table):
             table.reset_export_names()
 
-    NAMING_PLACEHOLDERS = {
+    NAMING_PLACEHOLDERS: ClassVar[dict[str, str]] = {  # noqa: RUF012
         "{layer_name}": "Source layer name",
         "{date}": "Today's date (YYYY-MM-DD)",
         "{time}": "Current time (HHMMSS)",
@@ -786,16 +817,13 @@ class ExportWidget(QWidget):
     @staticmethod
     def _resolve_template(template: str, layer_name: str, crs_authid: str) -> str:
         """Replace placeholders in a naming template with actual values."""
-        from datetime import datetime
-
-        now = datetime.now()
+        now = datetime.now().astimezone()
         result = template
         result = result.replace("{layer_name}", layer_name)
         result = result.replace("{date}", now.strftime("%Y-%m-%d"))
         result = result.replace("{time}", now.strftime("%H%M%S"))
-        result = result.replace("{crs}", crs_authid if crs_authid else "no_crs")
-        result = result.replace("{datetime}", now.strftime("%Y-%m-%d_%H%M%S"))
-        return result
+        result = result.replace("{crs}", crs_authid or "no_crs")
+        return result.replace("{datetime}", now.strftime("%Y-%m-%d_%H%M%S"))
 
     def _apply_naming_template(self) -> None:
         """Apply the current naming template to all export names in the single table."""
@@ -818,11 +846,14 @@ class ExportWidget(QWidget):
             if exp_item:
                 exp_item.setText(sanitized)
                 self._single_table._apply_export_name_style(
-                    exp_item, sanitized, src_name
+                    exp_item,
+                    sanitized,
+                    src_name,
                 )
         self._update_export_button_state()
 
     def _show_naming_hint(self) -> None:
+        """Display an info dialog listing available naming template placeholders."""
         lines = ["Available placeholders:\n"]
         for placeholder, desc in self.NAMING_PLACEHOLDERS.items():
             lines.append(f"  {placeholder}  —  {desc}")
@@ -854,15 +885,16 @@ class ExportWidget(QWidget):
         return "_".join(filter(None, clean))
 
     def _cancel_export(self) -> None:
+        """Request cancellation of the current export operation."""
         worker = getattr(self, "_export_worker", None)
         if worker is not None:
             worker.cancel()
         self._cancel_btn.setEnabled(False)
 
-    def _check_duplicate_names(self, specs: List[ExportSpec]) -> List[ExportSpec]:
+    def _check_duplicate_names(self, specs: list[ExportSpec]) -> list[ExportSpec]:
         """Check for duplicate export names in single-file mode. Warn and ask user."""
-        seen: Dict[str, int] = {}
-        dups: List[str] = []
+        seen: dict[str, int] = {}
+        dups: list[str] = []
         for s in specs:
             if s.target_mode == "single":
                 fname = f"{self._sanitize_name(s.export_name)}{s.file_extension}"
@@ -884,12 +916,13 @@ class ExportWidget(QWidget):
         return specs
 
     def _do_export(self) -> None:
+        """Start export for the currently active tab (Single Files or GeoPackage)."""
         if self._tabs.currentIndex() == 0:
             self._export_single()
         else:
             self._export_gpkg()
 
-    def _validate_export_layer(self, lid: str, exp_name: str, table: LayerTableWidget):
+    def _validate_export_layer(self, lid: str, _exp_name: str, table: LayerTableWidget):
         """Validate layer for export. Returns (layer, target_crs, is_raster, error)."""
         layer = QgsProject.instance().mapLayer(lid)
         if layer is None:
@@ -907,7 +940,7 @@ class ExportWidget(QWidget):
 
         return layer, target_crs, isinstance(layer, QgsRasterLayer), None
 
-    def _get_layer_drivers(self, lid: str, is_raster: bool) -> List[str]:
+    def _get_layer_drivers(self, lid: str, is_raster: bool) -> list[str]:
         """Return drivers to use for a layer. Respects per-layer format override."""
         override = self._single_table.get_format_override(lid)
         if override:
@@ -918,6 +951,7 @@ class ExportWidget(QWidget):
         return fallback
 
     def _export_single(self) -> None:
+        """Build and run ExportSpecs for the Single Files tab."""
         checked = self._single_table.get_selected_items()
         if not checked:
             QMessageBox.warning(self, "Nothing selected", "Check at least one layer.")
@@ -926,7 +960,9 @@ class ExportWidget(QWidget):
         out_dir = self._single_dir_edit.text().strip()
         if not out_dir:
             QMessageBox.warning(
-                self, "No output directory", "Please select an output directory."
+                self,
+                "No output directory",
+                "Please select an output directory.",
             )
             return
 
@@ -948,12 +984,14 @@ class ExportWidget(QWidget):
         style_mode = style_mode_map.get(style_idx, StyleMode.NONE)
         replace = self._single_replace_cb.isChecked()
 
-        specs: List[ExportSpec] = []
-        skipped: List[str] = []
+        specs: list[ExportSpec] = []
+        skipped: list[str] = []
         for lid, exp_name in checked:
             safe_name = self._sanitize_name(exp_name)
             layer, target_crs, is_raster, error = self._validate_export_layer(
-                lid, exp_name, self._single_table
+                lid,
+                exp_name,
+                self._single_table,
             )
             if error:
                 skipped.append(f"{exp_name}: {error}")
@@ -977,7 +1015,7 @@ class ExportWidget(QWidget):
                         replace_in_project=replace,
                         target_crs_authid=target_crs,
                         field_names=self._single_table.get_field_filter(lid),
-                    )
+                    ),
                 )
 
         if skipped:
@@ -998,6 +1036,7 @@ class ExportWidget(QWidget):
         self._run_specs(specs)
 
     def _export_gpkg(self) -> None:
+        """Build and run ExportSpecs for the GeoPackage tab."""
         checked = self._gpkg_table.get_selected_items()
         if not checked:
             QMessageBox.warning(self, "Nothing selected", "Check at least one layer.")
@@ -1006,7 +1045,9 @@ class ExportWidget(QWidget):
         gpkg_path = self._gpkg_path_edit.text().strip()
         if not gpkg_path:
             QMessageBox.warning(
-                self, "No output file", "Please specify a GeoPackage output path."
+                self,
+                "No output file",
+                "Please specify a GeoPackage output path.",
             )
             return
         if not gpkg_path.lower().endswith(".gpkg"):
@@ -1028,11 +1069,13 @@ class ExportWidget(QWidget):
             style_mode = StyleMode.NONE
         replace = self._gpkg_replace_cb.isChecked()
 
-        specs: List[ExportSpec] = []
-        skipped: List[str] = []
+        specs: list[ExportSpec] = []
+        skipped: list[str] = []
         for lid, exp_name in checked:
             layer, target_crs, is_raster, error = self._validate_export_layer(
-                lid, exp_name, self._gpkg_table
+                lid,
+                exp_name,
+                self._gpkg_table,
             )
             if error:
                 skipped.append(f"{exp_name}: {error}")
@@ -1056,7 +1099,7 @@ class ExportWidget(QWidget):
                     replace_in_project=replace,
                     target_crs_authid=target_crs,
                     field_names=self._gpkg_table.get_field_filter(lid),
-                )
+                ),
             )
 
         if skipped:
@@ -1072,8 +1115,9 @@ class ExportWidget(QWidget):
         self._keep_original_name = self._gpkg_keep_name_cb.isChecked()
         self._run_specs(specs)
 
-    def _check_overwrite(self, specs: List[ExportSpec]) -> bool:
-        existing: List[str] = []
+    def _check_overwrite(self, specs: list[ExportSpec]) -> bool:
+        """Prompt user before overwriting existing single-file exports. Return True to continue."""
+        existing: list[str] = []
         for s in specs:
             if s.target_mode != "single":
                 continue
@@ -1092,7 +1136,8 @@ class ExportWidget(QWidget):
             return reply == QMessageBox.StandardButton.Yes
         return True
 
-    def _run_specs(self, specs: List[ExportSpec]) -> None:
+    def _run_specs(self, specs: list[ExportSpec]) -> None:
+        """Dispatch ExportSpecs in a background thread via ExportWorker."""
         if not specs:
             return
 
@@ -1123,11 +1168,13 @@ class ExportWidget(QWidget):
         self._export_thread.start()
 
     def _on_worker_progress(self, current: int, total: int, msg: str) -> None:
+        """Update the progress bar and status label during background export."""
         pct = int((100.0 * current) / total) if total else 100
         self._progress.setValue(pct)
         self._status.setText(msg)
 
-    def _on_worker_finished(self, results: List[ExportResult]) -> None:
+    def _on_worker_finished(self, results: list[ExportResult]) -> None:
+        """Process export results: log, notify user, optionally load layers, save settings."""
         elapsed = time.time() - self._start_time
         was_cancelled = self._export_worker.was_cancelled
         self._progress.setVisible(False)
@@ -1135,25 +1182,25 @@ class ExportWidget(QWidget):
         self._export_btn.setEnabled(True)
         self._status.setText("")
 
-        log_lines: List[str] = []
+        log_lines: list[str] = []
         ok = sum(1 for r in results if r.success)
         fail = [r for r in results if not r.success]
 
         if was_cancelled:
             log_lines.append(
                 f"[{time.strftime('%H:%M:%S')}] Export cancelled "
-                f"({ok} ok, {len(fail)} failed, {elapsed:.1f}s)"
+                f"({ok} ok, {len(fail)} failed, {elapsed:.1f}s)",
             )
         else:
             log_lines.append(
                 f"[{time.strftime('%H:%M:%S')}] Export session: "
-                f"{ok} ok, {len(fail)} failed ({elapsed:.1f}s)"
+                f"{ok} ok, {len(fail)} failed ({elapsed:.1f}s)",
             )
         for r in results:
             if r.success:
                 fcount = r.features_written if r.features_written is not None else "?"
                 log_lines.append(
-                    f"  OK  {r.spec.export_name} -> {r.output_path} ({fcount} features)"
+                    f"  OK  {r.spec.export_name} -> {r.output_path} ({fcount} features)",
                 )
             else:
                 log_lines.append(f"  FAIL {r.spec.export_name}: {r.error}")
@@ -1178,7 +1225,9 @@ class ExportWidget(QWidget):
             )
         elif not was_cancelled:
             QMessageBox.information(
-                self, "Export complete", f"Successfully exported {ok} layer(s)."
+                self,
+                "Export complete",
+                f"Successfully exported {ok} layer(s).",
             )
 
         self._save_settings()
@@ -1210,13 +1259,18 @@ class ExportWidget(QWidget):
         self._gpkg_table.set_active_layer(layer)
 
     def _browse_single_dir(self) -> None:
+        """Open a directory chooser and set the Single Files output path."""
         d = QFileDialog.getExistingDirectory(self, "Select Output Directory")
         if d:
             self._single_dir_edit.setText(d)
 
     def _browse_gpkg_path(self) -> None:
+        """Open a save-file dialog and set the GeoPackage output path."""
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save GeoPackage As", "", "GeoPackage (*.gpkg);;All Files (*)"
+            self,
+            "Save GeoPackage As",
+            "",
+            "GeoPackage (*.gpkg);;All Files (*)",
         )
         if path:
             if not path.lower().endswith(".gpkg"):
@@ -1224,6 +1278,7 @@ class ExportWidget(QWidget):
             self._gpkg_path_edit.setText(path)
 
     def _active_table(self) -> LayerTableWidget:
+        """Return the currently visible layer table based on the active tab."""
         if self._tabs.currentIndex() == 0:
             return self._single_table
         gpkg = getattr(self, "_gpkg_table", None)

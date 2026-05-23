@@ -1,24 +1,33 @@
 """Comprehensive tests for the pure-Python .woof implementation.
 
-Covers: v1/v2 roundtrips, compatibility, edge cases, error handling, and directory packing."""
+Covers: v1/v2 roundtrips, compatibility, edge cases, error handling, and directory packing.
+"""
 
 from __future__ import annotations
 
 import os
 import struct
 import sys
-from typing import Dict, List
 
 import pytest
 
 # Allow direct import under test runners
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from test_data_gen import (
+    generate_binary_blob,
+    generate_csv,
+    generate_geojson,
+    generate_qgs_project,
+    make_standard_test_set,
+    write_test_data_to_disk,
+)
+
 from dock_export.woof_python import (
+    FLAG_XOR,
     HEADER_SIZE,
     WOOF_MAGIC,
     WOOF_VERSION_V2,
-    FLAG_XOR,
     _is_compressible,
     _xor,
     extract_woof_to_directory,
@@ -27,16 +36,6 @@ from dock_export.woof_python import (
     unpack_woof,
     woof_magic_bytes,
 )
-from test_data_gen import (
-    generate_binary_blob,
-    generate_csv,
-    generate_geojson,
-    generate_qgs_project,
-    generate_qml_style,
-    make_standard_test_set,
-    write_test_data_to_disk,
-)
-
 
 # ═══════════════════════════════════════════════════════════════════
 # 1.  CONSTANTS & HELPERS
@@ -209,8 +208,8 @@ class TestRoundtripEdgeCases:
 
     def test_unicode_content(self):
         entries = {
-            "data.geojson": '{"name": "café"}'.encode("utf-8"),
-            "metadata.xml": '<meta lang="fr">élève</meta>'.encode("utf-8"),
+            "data.geojson": '{"name": "café"}'.encode(),
+            "metadata.xml": '<meta lang="fr">élève</meta>'.encode(),
         }
         packed = pack_woof(entries, compress=True)
         assert unpack_woof(packed) == entries
@@ -267,16 +266,6 @@ class TestDirectoryPacking:
     def test_extract_preserves_subdirs(self, test_entries, temp_dir):
         packed = pack_woof(test_entries, compress=True)
         extract_woof_to_directory(packed, temp_dir)
-        # Verify extracted files match
-        for arcname, content in test_entries.items():
-            full_path = os.path.join(temp_dir, arcname)
-            assert os.path.isfile(full_path), f"Missing: {full_path}"
-            with open(full_path, "rb") as f:
-                assert f.read() == content, f"Content mismatch: {arcname}"
-
-    def test_extract_preserves_subdirs(self, test_entries, temp_dir):
-        packed = pack_woof(test_entries, compress=True)
-        extract_woof_to_directory(packed, temp_dir)
         assert os.path.isdir(os.path.join(temp_dir, "data"))
         assert os.path.isdir(os.path.join(temp_dir, "styles"))
         assert os.path.isdir(os.path.join(temp_dir, "vectors"))
@@ -293,11 +282,11 @@ class TestErrorHandling:
             unpack_woof(b"\x00" * 10)
 
     def test_bad_magic(self):
-        with pytest.raises(ValueError, match="Not a .woof"):
+        with pytest.raises(ValueError, match=r"Not a \.woof"):
             unpack_woof(b"ZIP\x00" * 10)
 
     def test_invalid_data(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             unpack_woof(b"WOOF" + b"\xff" * 100)
 
     def test_nonexistent_directory(self):
@@ -367,7 +356,7 @@ class TestStress:
     def test_many_small_files(self):
         entries = {}
         for i in range(1000):
-            entries[f"file_{i:04d}.txt"] = f"content_{i}".encode("utf-8")
+            entries[f"file_{i:04d}.txt"] = f"content_{i}".encode()
         packed = pack_woof(entries, compress=True)
         assert unpack_woof(packed) == entries
 
@@ -415,7 +404,7 @@ class TestScenarioFidelity:
         }
         packed = pack_woof(entries, compress=True)
         u = unpack_woof(packed)
-        assert u == entries, f"CSV roundtrip failed"
+        assert u == entries, "CSV roundtrip failed"
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -481,11 +470,9 @@ class TestRealData:
 
     def test_pack_from_real_directory(self, real_data_path, temp_dir):
         """Pack the real_data/ directory directly using pack_woof_from_directory."""
-        import os as _os
-
-        if not _os.path.isdir(real_data_path):
+        if not os.path.isdir(real_data_path):
             pytest.skip("tests/real_data/ not found")
-        if not any(_os.scandir(real_data_path)):
+        if not any(os.scandir(real_data_path)):
             pytest.skip("tests/real_data/ is empty")
         packed = pack_woof_from_directory(real_data_path, compress=True)
         unpacked = unpack_woof(packed)

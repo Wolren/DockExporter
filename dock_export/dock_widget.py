@@ -1,7 +1,7 @@
-"""Dock widget wrapper for the Dock Export plugin interface."""
+"""QgsDockWidget wrapper hosting the ExportWidget."""
 
-from qgis.PyQt.QtCore import Qt
 from qgis.gui import QgsDockWidget
+from qgis.PyQt.QtCore import Qt
 
 from .export_widget import ExportWidget
 
@@ -13,16 +13,18 @@ class ExportDockWidget(QgsDockWidget):
         super().__init__("Dock Export", parent)
         self.setObjectName("DockExportDockWidget")
         self.setAllowedAreas(
-            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+            Qt.DockWidgetArea.LeftDockWidgetArea
+            | Qt.DockWidgetArea.RightDockWidgetArea,
         )
 
         self._export_widget = ExportWidget(iface, parent=self)
         self.setWidget(self._export_widget)
 
     def closeEvent(self, event) -> None:
+        """Persist settings and disconnect project signals before closing."""
         self._export_widget.disconnect_all()
         super().closeEvent(event)
 
     def set_active_layer(self, layer) -> None:
-        """Delegate to ExportWidget to select and scroll to a specific layer."""
+        """Select and scroll to *layer* in the export table."""
         self._export_widget.set_active_layer(layer)

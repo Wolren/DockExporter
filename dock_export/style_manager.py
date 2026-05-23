@@ -1,4 +1,4 @@
-"""Style save/embed helpers for QML sidecar files, SLD files, and GPKG layer_styles table."""
+"""Style save/embed helpers: QML sidecar files, SLD files, and GPKG layer_styles table."""
 
 import logging
 import os
@@ -11,9 +11,11 @@ logger = logging.getLogger("DockExport.StyleManager")
 
 
 class StyleManager:
+    """Dispatch style export to QML files, SLD files, or GPKG-embedded styles."""
+
     @staticmethod
     def save_qml(layer: QgsMapLayer, base_path: str) -> bool:
-        """Save <base_path>.qml."""
+        """Save a .qml style file alongside *base_path*. Returns True on success."""
         path = base_path if base_path.endswith(".qml") else base_path + ".qml"
         try:
             result = layer.saveNamedStyle(path)
@@ -24,14 +26,15 @@ class StyleManager:
             if err:
                 logger.warning("Could not save QML for %s: %s", layer.name(), err)
                 return False
-            return True
-        except Exception as exc:
-            logger.error("save_qml error: %s", exc)
+        except Exception:
+            logger.exception("save_qml error")
             return False
+        else:
+            return True
 
     @staticmethod
     def save_sld(layer: QgsMapLayer, base_path: str) -> bool:
-        """Save <base_path>.sld (vector only)."""
+        """Save an .sld style file alongside *base_path* (vector only). Returns True on success."""
         if not isinstance(layer, QgsVectorLayer):
             return False
         path = base_path if base_path.endswith(".sld") else base_path + ".sld"
@@ -44,16 +47,19 @@ class StyleManager:
             if err:
                 logger.warning("Could not save SLD for %s: %s", layer.name(), err)
                 return False
-            return True
-        except Exception as exc:
-            logger.error("save_sld error: %s", exc)
+        except Exception:
+            logger.exception("save_sld error")
             return False
+        else:
+            return True
 
     @staticmethod
     def embed_style_in_gpkg(
-        layer: QgsMapLayer, gpkg_path: str, table_name: str
+        layer: QgsMapLayer,
+        gpkg_path: str,
+        table_name: str,
     ) -> bool:
-        """Write current renderer+labeling into GPKG layer_styles table."""
+        """Write the current renderer and labeling into the GPKG layer_styles table."""
         if not isinstance(layer, QgsVectorLayer):
             return False
         try:
@@ -72,10 +78,11 @@ class StyleManager:
             if err:
                 logger.warning("saveStyleToDatabase error for %s: %s", table_name, err)
                 return False
-            return True
-        except Exception as exc:
-            logger.error("embed_style_in_gpkg error: %s", exc)
+        except Exception:
+            logger.exception("embed_style_in_gpkg error")
             return False
+        else:
+            return True
 
     def apply_style_mode(
         self,
@@ -84,7 +91,7 @@ class StyleManager:
         output_file_path: str,
         gpkg_table_name: str = "",
     ) -> None:
-        """Dispatch to QML/SLD/embed based on style_mode."""
+        """Dispatch to QML, SLD, or embed based on *style_mode*."""
         if style_mode == StyleMode.NONE:
             return
 

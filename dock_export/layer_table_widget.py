@@ -2,19 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
-
-from qgis.PyQt.QtCore import QSize, Qt, pyqtSignal
-from qgis.PyQt.QtGui import QBrush, QColor, QIcon, QPalette
-from qgis.PyQt.QtWidgets import (
-    QAbstractItemView,
-    QComboBox,
-    QHeaderView,
-    QSizePolicy,
-    QTableWidget,
-    QTableWidgetItem,
-    QStyle,
-)
 from qgis.core import (
     QgsApplication,
     QgsCoordinateReferenceSystem,
@@ -22,6 +9,17 @@ from qgis.core import (
     QgsProject,
     QgsRasterLayer,
     QgsVectorLayer,
+)
+from qgis.PyQt.QtCore import Qt, pyqtSignal
+from qgis.PyQt.QtGui import QBrush, QColor, QIcon, QPalette
+from qgis.PyQt.QtWidgets import (
+    QAbstractItemView,
+    QComboBox,
+    QHeaderView,
+    QSizePolicy,
+    QStyle,
+    QTableWidget,
+    QTableWidgetItem,
 )
 
 from .export_engine import layer_export_block_reason
@@ -75,10 +73,9 @@ FORMAT_DEFAULT_KEY = ""
 
 
 class LayerTableWidget(QTableWidget):
-    """Editable layer table. Export names stored internally, never touch live layers.
+    """Editable layer table used in the Single Files and GeoPackage tabs.
 
-    Columns: Type icon, Source Name (read-only), Export Name (editable),
-    Format (combo), Filter badge, CRS (double-click for native picker).
+    Columns: Type icon, Source Name, Export Name, Format, Filter, CRS.
 
     Signals
     -------
@@ -96,13 +93,13 @@ class LayerTableWidget(QTableWidget):
     def __init__(self, show_format: bool = True, parent=None):
         super().__init__(0, N_COLS, parent)
         self._show_format = show_format
-        self._export_names: Dict[str, str] = {}
-        self._format_overrides: Dict[str, str] = {}
-        self._filters: Dict[str, str] = {}
-        self._target_crs: Dict[str, str] = {}
-        self._field_filters: Dict[str, List[str]] = {}
-        self._export_warnings: Dict[str, str] = {}
-        self._row_for_layer: Dict[str, int] = {}
+        self._export_names: dict[str, str] = {}
+        self._format_overrides: dict[str, str] = {}
+        self._filters: dict[str, str] = {}
+        self._target_crs: dict[str, str] = {}
+        self._field_filters: dict[str, list[str]] = {}
+        self._export_warnings: dict[str, str] = {}
+        self._row_for_layer: dict[str, int] = {}
 
         self._setup_header()
         self._setup_appearance()
@@ -123,14 +120,7 @@ class LayerTableWidget(QTableWidget):
         return hint
 
     def _setup_header(self) -> None:
-        headers = [
-            "",
-            "Source Name",
-            "Export Name",
-            "Format",
-            "Filter",
-            "Settings",
-        ]
+        headers = ["", "Source Name", "Export Name", "Format", "Filter", "Settings"]
         self.setHorizontalHeaderLabels(headers)
         hh = self.horizontalHeader()
         hh.setStyleSheet("font-weight:bold;")
@@ -155,14 +145,16 @@ class LayerTableWidget(QTableWidget):
         self.setEditTriggers(
             QAbstractItemView.EditTrigger.DoubleClicked
             | QAbstractItemView.EditTrigger.EditKeyPressed
-            | QAbstractItemView.EditTrigger.SelectedClicked
+            | QAbstractItemView.EditTrigger.SelectedClicked,
         )
         self.setAlternatingRowColors(True)
         self.verticalHeader().setVisible(False)
         self.setShowGrid(False)
 
     def populate(
-        self, layers: List[QgsMapLayer], type_filter: Optional[str] = None
+        self,
+        layers: list[QgsMapLayer],
+        type_filter: str | None = None,
     ) -> None:
         """Populate the table with the given list of layers."""
         prev_selected = set(self.selected_layer_ids())
@@ -170,7 +162,7 @@ class LayerTableWidget(QTableWidget):
         self.setRowCount(0)
         self._row_for_layer.clear()
 
-        rows_to_reselect: List[int] = []
+        rows_to_reselect: list[int] = []
         for layer in layers:
             is_vector = isinstance(layer, QgsVectorLayer)
             is_raster = isinstance(layer, QgsRasterLayer)
@@ -211,8 +203,8 @@ class LayerTableWidget(QTableWidget):
                 src_item.setForeground(QBrush(QColor("#9a3412")))
                 src_item.setIcon(
                     self.style().standardIcon(
-                        QStyle.StandardPixmap.SP_MessageBoxWarning
-                    )
+                        QStyle.StandardPixmap.SP_MessageBoxWarning,
+                    ),
                 )
             self.setItem(row, COL_SOURCE, src_item)
 
@@ -221,7 +213,7 @@ class LayerTableWidget(QTableWidget):
             exp_item.setFlags(
                 Qt.ItemFlag.ItemIsEnabled
                 | Qt.ItemFlag.ItemIsSelectable
-                | Qt.ItemFlag.ItemIsEditable
+                | Qt.ItemFlag.ItemIsEditable,
             )
             exp_item.setData(Qt.ItemDataRole.UserRole, layer.id())
             self._apply_export_name_style(exp_item, export_name, layer.name())
@@ -237,10 +229,12 @@ class LayerTableWidget(QTableWidget):
                     if driver == current_driver:
                         combo.setCurrentIndex(idx)
                         break
+                lid = layer.id()
                 combo.currentIndexChanged.connect(
-                    lambda _idx, lid=layer.id(), f=formats: self._on_format_changed(
-                        lid, f
-                    )
+                    lambda _idx, lid=lid, f=formats: self._on_format_changed(
+                        lid,
+                        f,
+                    ),
                 )
                 self.setCellWidget(row, COL_FORMAT, combo)
 
@@ -270,7 +264,7 @@ class LayerTableWidget(QTableWidget):
             self.selectRow(row)
         self._emit_selection_changed()
 
-    def _on_format_changed(self, layer_id: str, formats: List[Tuple[str, str]]) -> None:
+    def _on_format_changed(self, layer_id: str, formats: list[tuple[str, str]]) -> None:
         row = self._row_for_layer.get(layer_id)
         if row is None:
             return
@@ -319,10 +313,10 @@ class LayerTableWidget(QTableWidget):
                 filt_item.setText("\u26a1" if has else "")
                 filt_item.setToolTip(f"Filter:\n{expression}" if has else "")
                 filt_item.setForeground(
-                    QBrush(QColor("#e67e22") if has else QColor("#999999"))
+                    QBrush(QColor("#e67e22") if has else QColor("#999999")),
                 )
 
-    def get_filters(self) -> Dict[str, str]:
+    def get_filters(self) -> dict[str, str]:
         """Return a copy of the current filter dict."""
         return dict(self._filters)
 
@@ -342,11 +336,11 @@ class LayerTableWidget(QTableWidget):
                 self._apply_crs_style(crs_item)
                 self.blockSignals(False)
 
-    def get_field_filter(self, layer_id: str) -> Optional[List[str]]:
+    def get_field_filter(self, layer_id: str) -> list[str] | None:
         """Return selected field names for a layer, or None for all fields."""
         return self._field_filters.get(layer_id)
 
-    def set_field_filter(self, layer_id: str, field_names: Optional[List[str]]) -> None:
+    def set_field_filter(self, layer_id: str, field_names: list[str] | None) -> None:
         """Set which fields to include for a layer. None means all fields."""
         if field_names:
             self._field_filters[layer_id] = field_names
@@ -356,9 +350,9 @@ class LayerTableWidget(QTableWidget):
     def export_warning(self, layer_id: str) -> str:
         return self._export_warnings.get(layer_id, "")
 
-    def selected_layer_ids(self) -> List[str]:
+    def selected_layer_ids(self) -> list[str]:
         """Return list of selected layer IDs."""
-        ids: List[str] = []
+        ids: list[str] = []
         model = self.selectionModel()
         if not model:
             return ids
@@ -376,7 +370,7 @@ class LayerTableWidget(QTableWidget):
         self.clearSelection()
         self._emit_selection_changed()
 
-    def get_selected_items(self) -> List[Tuple[str, str]]:
+    def get_selected_items(self) -> list[tuple[str, str]]:
         """Return (layer_id, export_name) tuples for selected rows."""
         result = []
         model = self.selectionModel()
@@ -408,7 +402,7 @@ class LayerTableWidget(QTableWidget):
                 self._apply_export_name_style(exp_item, source_name, source_name)
         self.blockSignals(False)
 
-    def get_export_name(self, layer_id: str) -> Optional[str]:
+    def get_export_name(self, layer_id: str) -> str | None:
         return self._export_names.get(layer_id)
 
     def set_active_layer(self, layer: QgsMapLayer) -> None:
@@ -476,7 +470,7 @@ class LayerTableWidget(QTableWidget):
             elif layer_id in self._field_filters:
                 del self._field_filters[layer_id]
 
-    def _layer_id_for_row(self, row: int) -> Optional[str]:
+    def _layer_id_for_row(self, row: int) -> str | None:
         item = self.item(row, COL_SOURCE)
         return item.data(Qt.ItemDataRole.UserRole) if item else None
 
@@ -496,11 +490,14 @@ class LayerTableWidget(QTableWidget):
                 else self.style().standardIcon(QStyle.StandardPixmap.SP_DriveHDIcon)
             )
         return self.style().standardIcon(
-            QStyle.StandardPixmap.SP_FileDialogDetailedView
+            QStyle.StandardPixmap.SP_FileDialogDetailedView,
         )
 
     def _apply_export_name_style(
-        self, item: QTableWidgetItem, export_name: str, source_name: str
+        self,
+        item: QTableWidgetItem,
+        export_name: str,
+        source_name: str,
     ) -> None:
         f = item.font()
         if export_name != source_name:

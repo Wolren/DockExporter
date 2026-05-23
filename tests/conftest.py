@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 import tempfile
-from typing import Dict, Generator
+from collections.abc import Generator
 
 import pytest
-
 from test_data_gen import (
     get_real_data_dir,
     load_real_data_entries,
@@ -18,7 +16,7 @@ from test_data_gen import (
 
 
 @pytest.fixture(scope="function")
-def test_entries() -> Dict[str, bytes]:
+def test_entries() -> dict[str, bytes]:
     """Standard test data for roundtrip tests."""
     return make_standard_test_set()
 
@@ -46,7 +44,7 @@ def real_data_path() -> str:
 
 
 @pytest.fixture(scope="session")
-def real_data_entries() -> Dict[str, bytes]:
+def real_data_entries() -> dict[str, bytes]:
     """Load real data from tests/real_data/ for integration tests.
 
     Files larger than 100 MB are excluded to keep memory manageable.
@@ -65,6 +63,6 @@ def real_data_entries() -> Dict[str, bytes]:
             sum(len(v) for v in entries.values() if len(v) > max_bytes) / 1_048_576
         )
         print(
-            f"  [real_data] Excluded {dropped} files ({dropped_mb:.1f} MB) exceeding 100 MB limit"
+            f"  [real_data] Excluded {dropped} files ({dropped_mb:.1f} MB) exceeding 100 MB limit",
         )
     return filtered

@@ -1,18 +1,19 @@
-"""Plugin entry point for Dock Export. Manages dock widget lifecycle and context menu."""
+"""Plugin entry point. Manages dock widget lifecycle, toolbar, menus, and layer tree context menu."""
 
 import os
+from contextlib import suppress
 
-from qgis.PyQt.QtCore import Qt, QPoint
+from qgis.core import QgsMapLayer
+from qgis.PyQt.QtCore import QPoint, Qt
 from qgis.PyQt.QtGui import QAction, QIcon
 from qgis.PyQt.QtWidgets import QFileDialog, QMenu, QMessageBox
-from qgis.core import QgsMapLayer
 
 from .dock_widget import ExportDockWidget
 from .woof_storage import open_woof_project
 
 
 class DockExportPlugin:
-    """Plugin main class. Creates dock, toolbar icon, menu, and layer tree context menu."""
+    """Creates the dock widget, toolbar icon, plugin menu, and layer tree context menu entries."""
 
     def __init__(self, iface):
         self.iface = iface
@@ -21,7 +22,7 @@ class DockExportPlugin:
         self._open_woof_action: QAction = None
 
     def initGui(self):
-        """Set up toolbar icon, plugin menu, and layer tree context menu."""
+        """Set up toolbar icon, plugin menus, and layer tree context menu."""
         icon_path = os.path.join(os.path.dirname(__file__), "icons", "dock_export.svg")
         self._action = QAction(QIcon(icon_path), "Dock Export", self.iface.mainWindow())
         self._action.setCheckable(True)
@@ -31,7 +32,9 @@ class DockExportPlugin:
 
         # Add "Open .woof Project..." to Plugin menu and Project → Open From
         self._open_woof_action = QAction(
-            QIcon(icon_path), "Open .woof Project...", self.iface.mainWindow()
+            QIcon(icon_path),
+            "Open .woof Project...",
+            self.iface.mainWindow(),
         )
         self._open_woof_action.triggered.connect(self._on_open_woof)
         self.iface.addPluginToMenu("&Dock Export", self._open_woof_action)
@@ -53,11 +56,11 @@ class DockExportPlugin:
         self.layer_tree_view = self.iface.layerTreeView()
         if self.layer_tree_view:
             self.layer_tree_view.setContextMenuPolicy(
-                Qt.ContextMenuPolicy.CustomContextMenu
+                Qt.ContextMenuPolicy.CustomContextMenu,
             )
             self._ctx_connection = (
                 self.layer_tree_view.customContextMenuRequested.connect(
-                    self._on_layer_tree_context_menu
+                    self._on_layer_tree_context_menu,
                 )
             )
 
@@ -73,28 +76,27 @@ class DockExportPlugin:
             self._dock.deleteLater()
             self._dock = None
         if self.layer_tree_view and self._ctx_connection:
-            try:
+            with suppress(TypeError):
                 self.layer_tree_view.customContextMenuRequested.disconnect(
-                    self._on_layer_tree_context_menu
+                    self._on_layer_tree_context_menu,
                 )
-            except TypeError:
-                pass
 
     def _toggle_dock(self, checked: bool) -> None:
+        """Show or hide the export dock widget."""
         if checked:
             if self._dock is None:
                 self._dock = ExportDockWidget(self.iface, self.iface.mainWindow())
                 self._dock.visibilityChanged.connect(self._on_visibility_changed)
                 self.iface.addDockWidget(
-                    Qt.DockWidgetArea.RightDockWidgetArea, self._dock
+                    Qt.DockWidgetArea.RightDockWidgetArea,
+                    self._dock,
                 )
             self._dock.show()
-        else:
-            if self._dock:
-                self._dock.hide()
+        elif self._dock:
+            self._dock.hide()
 
     def _on_open_woof(self) -> None:
-        """Show file picker for .woof, extract, and open the project."""
+        """Show a file picker for .woof archives, then extract and open the project."""
         path, _ = QFileDialog.getOpenFileName(
             self.iface.mainWindow(),
             "Open .woof Project",
@@ -113,11 +115,12 @@ class DockExportPlugin:
             )
 
     def _on_visibility_changed(self, visible: bool) -> None:
+        """Sync toolbar button checked state with dock visibility."""
         if self._action:
             self._action.setChecked(visible)
 
     def _on_layer_tree_context_menu(self, point: QPoint) -> None:
-        """Add 'Export with Dock exporter' action to the layer tree context menu."""
+        """Inject 'Export with Dock exporter' action into the layer tree context menu."""
         if not self.layer_tree_view or not self.layer_tree_view.menuProvider():
             return
 
@@ -146,7 +149,7 @@ class DockExportPlugin:
         menu.exec(global_pos)
 
     def _open_dock_export_for_layer(self, layer) -> None:
-        """Open dock and select the given layer in the table."""
+        """Open the dock and select *layer* in the export table."""
         if self._dock is None:
             self._toggle_dock(True)
         else:

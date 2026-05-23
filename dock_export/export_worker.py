@@ -1,4 +1,4 @@
-"""Background export worker. Moves ExportEngine.run() off the main thread."""
+"""Background export worker. Runs ExportEngine.run() off the main thread."""
 
 from qgis.PyQt.QtCore import QObject, pyqtSignal
 
@@ -30,14 +30,15 @@ class ExportWorker(QObject):
         self._engine = ExportEngine(style_manager or StyleManager())
 
     def run(self) -> None:
-        """Called from the QThread. Emits finished when done."""
+        """Called from the QThread. Emits *finished* when all specs are processed."""
         results = self._engine.run(self.specs, progress_cb=self._on_progress)
         self.was_cancelled = self._engine.cancel_requested
         self.finished.emit(results)
 
     def cancel(self) -> None:
-        """Request cancellation of the current export."""
+        """Request cancellation after the current spec completes."""
         self._engine.cancel_export()
 
     def _on_progress(self, current: int, total: int, message: str) -> None:
+        """Forward engine progress to the UI thread."""
         self.progress.emit(current, total, message)

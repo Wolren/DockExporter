@@ -1,5 +1,8 @@
+//! Error types for .woof archive operations.
+
 use thiserror::Error;
 
+/// Errors that can occur during .woof pack, unpack, or integrity verification.
 #[derive(Error, Debug)]
 pub enum WoofError {
     #[error("I/O error: {0}")]
@@ -30,6 +33,7 @@ pub enum WoofError {
     BadName(#[from] std::string::FromUtf8Error),
 }
 
+#[allow(clippy::match_same_arms)]
 impl From<WoofError> for pyo3::PyErr {
     fn from(e: WoofError) -> Self {
         let msg = e.to_string();

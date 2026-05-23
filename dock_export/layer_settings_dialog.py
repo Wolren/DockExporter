@@ -1,7 +1,7 @@
-"""Per-layer settings dialog: target CRS + attribute field selection."""
+"""Per-layer settings dialog: target CRS picker and attribute field selection."""
 
-from typing import Dict, List, Optional
-
+from qgis.core import QgsCoordinateReferenceSystem, QgsField, QgsProject, QgsVectorLayer
+from qgis.gui import QgsProjectionSelectionDialog
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtWidgets import (
     QCheckBox,
@@ -15,8 +15,6 @@ from qgis.PyQt.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
 )
-from qgis.core import QgsCoordinateReferenceSystem, QgsField, QgsProject, QgsVectorLayer
-from qgis.gui import QgsProjectionSelectionDialog
 
 
 class LayerSettingsDialog(QDialog):
@@ -30,14 +28,14 @@ class LayerSettingsDialog(QDialog):
         self,
         layer_id: str,
         current_crs_authid: str,
-        selected_fields: Optional[List[str]] = None,
+        selected_fields: list[str] | None = None,
         parent=None,
     ):
         super().__init__(parent)
         self._layer_id = layer_id
         self._crs_authid = current_crs_authid
-        self._selected_fields: List[str] = selected_fields or []
-        self._field_checkboxes: Dict[str, QCheckBox] = {}
+        self._selected_fields: list[str] = selected_fields or []
+        self._field_checkboxes: dict[str, QCheckBox] = {}
 
         self.setWindowTitle("Layer Export Settings")
         self.setMinimumWidth(420)
@@ -50,11 +48,10 @@ class LayerSettingsDialog(QDialog):
         layer_name = layer.name() if layer else "(unknown)"
         layout.addWidget(QLabel(f"<b>{layer_name}</b>"))
 
-        # CRS row
         crs_row = QHBoxLayout()
         crs_row.addWidget(QLabel("Target CRS:"))
         self._crs_label = QLabel(
-            self._crs_authid if self._crs_authid else "Source CRS (no override)"
+            self._crs_authid or "Source CRS (no override)",
         )
         self._crs_label.setStyleSheet("color:#555;")
         crs_row.addWidget(self._crs_label)
@@ -64,7 +61,6 @@ class LayerSettingsDialog(QDialog):
         crs_row.addStretch()
         layout.addLayout(crs_row)
 
-        # Field selection (vector only)
         if isinstance(layer, QgsVectorLayer):
             layout.addWidget(QLabel("Attribute fields to include:"))
 
@@ -87,33 +83,34 @@ class LayerSettingsDialog(QDialog):
 
                 check_item = QTableWidgetItem("")
                 check_item.setFlags(
-                    Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+                    Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable,
                 )
                 check_item.setCheckState(
-                    Qt.CheckState.Checked
-                    if (all_checked or fname in self._selected_fields)
-                    else Qt.CheckState.Unchecked
+                    (
+                        Qt.CheckState.Checked
+                        if (all_checked or fname in self._selected_fields)
+                        else Qt.CheckState.Unchecked
+                    ),
                 )
                 self._field_table.setItem(row, self._COL_CHECK, check_item)
 
                 name_item = QTableWidgetItem(fname)
                 name_item.setFlags(
-                    Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+                    Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable,
                 )
                 self._field_table.setItem(row, self._COL_NAME, name_item)
 
                 type_item = QTableWidgetItem(self._field_type_str(f))
                 type_item.setFlags(
-                    Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+                    Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable,
                 )
                 type_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self._field_table.setItem(row, self._COL_TYPE, type_item)
 
             layout.addWidget(self._field_table)
 
-        # Buttons
         buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
         )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -121,12 +118,14 @@ class LayerSettingsDialog(QDialog):
 
     @staticmethod
     def _field_type_str(f: QgsField) -> str:
+        """Return a human-readable type string for a QgsField, including length if set."""
         type_name = f.typeName()
         if f.length() > 0:
             return f"{type_name}({f.length()})"
         return type_name
 
     def _pick_crs(self) -> None:
+        """Open the QGIS projection picker and update the stored CRS."""
         dlg = QgsProjectionSelectionDialog(self)
         crs = QgsCoordinateReferenceSystem(self._crs_authid)
         if crs.isValid():
@@ -138,9 +137,11 @@ class LayerSettingsDialog(QDialog):
                 self._crs_label.setText(self._crs_authid)
 
     def crs_authid(self) -> str:
+        """Return the currently selected CRS auth ID."""
         return self._crs_authid
 
-    def selected_field_names(self) -> List[str]:
+    def selected_field_names(self) -> list[str]:
+        """Return the list of checked field names."""
         names = []
         for row in range(self._field_table.rowCount()):
             check = self._field_table.item(row, self._COL_CHECK)

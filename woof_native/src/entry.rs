@@ -1,12 +1,26 @@
+//! Core data types for .woof archive entries and seek-table metadata.
+
 use std::cmp::Ordering;
 
+/// Magic bytes identifying a .woof archive.
 pub const WOOF_MAGIC: &[u8; 4] = b"WOOF";
+
+/// Legacy v2 format version identifier.
 pub const WOOF_VERSION_V2: u32 = 2;
+
+/// Current v3 format version identifier (seek table + xxhash integrity).
 pub const WOOF_VERSION_V3: u32 = 3;
+
+/// Bit flag indicating this entry is zstd-compressed.
 pub const FLAG_ENTRY_ZSTD: u32 = 2;
+
+/// Byte size of the v2 fixed header.
 pub const V2_HEADER_SIZE: usize = 32;
+
+/// Byte size of the v3 fixed header (48 bytes).
 pub const V3_HEADER_SIZE: usize = 48;
 
+/// A named entry with raw (pre-compression) data.
 #[derive(Clone)]
 pub struct Entry {
     pub name: String,
@@ -14,7 +28,8 @@ pub struct Entry {
 }
 
 impl Entry {
-    pub fn new(name: String, data: Vec<u8>) -> Self {
+    #[must_use]
+    pub const fn new(name: String, data: Vec<u8>) -> Self {
         Self { name, data }
     }
 }
@@ -39,6 +54,7 @@ impl PartialEq for Entry {
     }
 }
 
+/// Metadata entry in the v3 seek table.
 #[derive(Clone, Debug)]
 pub struct SeekEntry {
     pub flags: u32,

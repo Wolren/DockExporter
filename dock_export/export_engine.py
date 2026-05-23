@@ -1,10 +1,10 @@
-"""Core export engine. Iterates ExportSpec objects and dispatches to vector/raster writers."""
+"""Core export engine. Dispatches ExportSpec objects to vector (OGR) or raster (GDAL) writers."""
 
 from __future__ import annotations
 
 import logging
 import os
-from typing import List, Optional, Tuple
+import uuid
 
 from qgis.core import (
     Qgis,
@@ -29,7 +29,7 @@ from qgis.core import (
     QgsWkbTypes,
 )
 
-from .models import ExportSpec, ExportResult, StyleMode
+from .models import ExportResult, ExportSpec, StyleMode
 from .style_manager import StyleManager
 
 try:
@@ -43,16 +43,16 @@ logger = logging.getLogger("DockExport.ExportEngine")
 
 
 def layer_export_block_reason(layer: QgsMapLayer) -> str:
-    """Return reason string if layer cannot be exported, empty string if OK."""
+    """Return a reason string if the layer cannot be exported, or empty string if it can."""
     if isinstance(layer, (QgsRasterLayer, QgsVectorLayer)):
         return ""
     return "This layer type is not supported by the exporter."
 
 
 class ExportEngine:
-    """Executes ExportSpec list: vectors via QgsVectorFileWriter, rasters via GDAL."""
+    """Executes ExportSpec objects: vectors via QgsVectorFileWriter, rasters via GDAL Translate."""
 
-    def __init__(self, style_manager: Optional[StyleManager] = None):
+    def __init__(self, style_manager: StyleManager | None = None):
         self._style = style_manager or StyleManager()
         self._cancel_requested = False
 
@@ -64,10 +64,10 @@ class ExportEngine:
         """Request cancellation after the current spec finishes."""
         self._cancel_requested = True
 
-    def run(self, specs: List[ExportSpec], progress_cb=None) -> List[ExportResult]:
-        """Execute a list of ExportSpec objects. Returns list of ExportResult."""
+    def run(self, specs: list[ExportSpec], progress_cb=None) -> list[ExportResult]:
+        """Execute a list of ExportSpec objects. Returns a list of ExportResult."""
         self._cancel_requested = False
-        results: List[ExportResult] = []
+        results: list[ExportResult] = []
         total = len(specs)
 
         for i, spec in enumerate(specs):
@@ -123,7 +123,7 @@ class ExportEngine:
         spec: ExportSpec,
         result: ExportResult,
     ) -> None:
-        """Write a vector layer to a single file or GPKG table based on target_mode."""
+        """Write a vector layer to a single file or GPKG table."""
         is_gpkg_mode = spec.target_mode == "gpkg"
 
         Action = QgsVectorFileWriter.ActionOnExistingFile
@@ -178,7 +178,6 @@ class ExportEngine:
             write_source = layer
             result.features_written = layer.featureCount()
 
-            # Drop FID for GPKG (always include all other fields)
             if spec.driver == "GPKG" or is_gpkg_mode:
                 opts.attributes = [
                     i
@@ -186,10 +185,8 @@ class ExportEngine:
                     if layer.fields()[i].name().lower() != "fid"
                 ]
 
-        # Apply per-layer field filter
         if spec.field_names:
             if opts.attributes is not None:
-                # Intersect with existing attribute filter (e.g., FID drop)
                 existing = set(opts.attributes)
                 indices = [
                     i
@@ -211,9 +208,11 @@ class ExportEngine:
             write_source.crs(),
             transform_ctx,
             opts,
-            QgsFeatureSink.SinkFlags(QgsFeatureSink.SinkFlag.RegeneratePrimaryKey)
-            if spec.driver == "GPKG" or is_gpkg_mode
-            else QgsFeatureSink.SinkFlags(),
+            (
+                QgsFeatureSink.SinkFlags(QgsFeatureSink.SinkFlag.RegeneratePrimaryKey)
+                if spec.driver == "GPKG" or is_gpkg_mode
+                else QgsFeatureSink.SinkFlags()
+            ),
             "",
             "",
         )
@@ -252,19 +251,23 @@ class ExportEngine:
             if spec.style_mode != StyleMode.NONE:
                 self._style.apply_style_mode(
                     layer,
-                    StyleMode.EMBED
-                    if spec.style_mode == StyleMode.EMBED
-                    else spec.style_mode,
+                    (
+                        StyleMode.EMBED
+                        if spec.style_mode == StyleMode.EMBED
+                        else spec.style_mode
+                    ),
                     output_path,
                     spec.export_name,
                 )
-        else:
-            if spec.style_mode not in (StyleMode.NONE, StyleMode.EMBED):
-                self._style.apply_style_mode(layer, spec.style_mode, output_path)
-            elif spec.style_mode == StyleMode.EMBED and spec.driver == "GPKG":
-                self._style.apply_style_mode(
-                    layer, StyleMode.EMBED, output_path, spec.export_name
-                )
+        elif spec.style_mode not in (StyleMode.NONE, StyleMode.EMBED):
+            self._style.apply_style_mode(layer, spec.style_mode, output_path)
+        elif spec.style_mode == StyleMode.EMBED and spec.driver == "GPKG":
+            self._style.apply_style_mode(
+                layer,
+                StyleMode.EMBED,
+                output_path,
+                spec.export_name,
+            )
 
     def _export_raster(
         self,
@@ -272,7 +275,7 @@ class ExportEngine:
         spec: ExportSpec,
         result: ExportResult,
     ) -> None:
-        """Dispatch raster export based on target_mode."""
+        """Dispatch raster export to single file or GPKG based on target_mode."""
         transform_ctx = QgsProject.instance().transformContext()
         if spec.target_mode == "gpkg":
             self._export_raster_to_gpkg(layer, spec, result, transform_ctx)
@@ -284,9 +287,9 @@ class ExportEngine:
         layer: QgsRasterLayer,
         spec: ExportSpec,
         result: ExportResult,
-        transform_ctx: QgsCoordinateTransformContext,
+        _transform_ctx: QgsCoordinateTransformContext,
     ) -> None:
-        """Export raster to GeoTIFF via GDAL Translate."""
+        """Export raster to a single file via GDAL Translate."""
         if not GDAL_AVAILABLE:
             result.error = "GDAL is required for raster export"
             return
@@ -303,7 +306,7 @@ class ExportEngine:
             return
 
         if src_path.lower().startswith(
-            ("context:", "wms:", "xyz:", "wmts:", "http://", "https://")
+            ("context:", "wms:", "xyz:", "wmts:", "http://", "https://"),
         ):
             result.error = "Non-file raster providers are not supported yet"
             return
@@ -335,9 +338,9 @@ class ExportEngine:
         layer: QgsRasterLayer,
         spec: ExportSpec,
         result: ExportResult,
-        transform_ctx: QgsCoordinateTransformContext,
+        _transform_ctx: QgsCoordinateTransformContext,
     ) -> None:
-        """Embed raster into a GeoPackage via GDAL Translate with RASTER_TABLE."""
+        """Embed a raster into a GeoPackage via GDAL Translate with RASTER_TABLE."""
         if not GDAL_AVAILABLE:
             result.error = "GDAL is required for raster export to GeoPackage"
             return
@@ -351,7 +354,7 @@ class ExportEngine:
             return
 
         if src_path.lower().startswith(
-            ("context:", "wms:", "xyz:", "wmts:", "http://", "https://")
+            ("context:", "wms:", "xyz:", "wmts:", "http://", "https://"),
         ):
             result.error = "Non-file raster providers are not supported yet"
             return
@@ -389,28 +392,23 @@ class ExportEngine:
         gpkg_path: str,
         table_name: str,
         target_crs: QgsCoordinateReferenceSystem = None,
-    ) -> Tuple[bool, str]:
-        """Export any raster layer (including WMS/WMTS) to GPKG using QGIS raster pipe.
+    ) -> tuple[bool, str]:
+        """Export any raster (including remote providers like WMS/WMTS) to GPKG via the QGIS rendering pipeline.
 
-        This works for all raster providers because it uses the QGIS rendering pipeline
-        rather than GDAL file access. Slower than GDAL Translate for file-based rasters
-        but handles remote layers (WMS, WMTS, XYZ) correctly.
-        Returns (success, error_message).
+        Slower than GDAL Translate for file-based rasters but works with non-file raster providers.
         """
-        from osgeo import gdal
-
         dp = layer.dataProvider()
         if dp is None:
             return False, "No data provider"
 
         try:
-            # Resolve target CRS
             dst_crs = target_crs if target_crs and target_crs.isValid() else layer.crs()
 
-            # Build raster pipe
             projector = QgsRasterProjector()
             projector.setCrs(
-                dp.crs(), dst_crs, QgsProject.instance().transformContext()
+                dp.crs(),
+                dst_crs,
+                QgsProject.instance().transformContext(),
             )
             pipe = QgsRasterPipe()
             clone = dp.clone()
@@ -419,9 +417,6 @@ class ExportEngine:
             pipe.set(clone)
             pipe.insert(2, projector)
 
-            # Write to GPKG with temporary name to avoid encoding issues
-            import uuid
-
             tmp_name = uuid.uuid4().hex
             writer = QgsRasterFileWriter(gpkg_path)
             writer.setOutputFormat("GPKG")
@@ -429,7 +424,7 @@ class ExportEngine:
                 [
                     f"RASTER_TABLE={tmp_name}",
                     "APPEND_SUBDATASET=YES",
-                ]
+                ],
             )
             feedback = QgsRasterBlockFeedback()
             err = writer.writeRaster(
@@ -449,7 +444,6 @@ class ExportEngine:
                     msg += f": {'; '.join(str(e) for e in errors)}"
                 return False, msg
 
-            # Rename temporary table to desired name
             gdal.UseExceptions()
             src_ds = gdal.OpenEx(gpkg_path, gdal.OF_VECTOR)
             try:
@@ -457,14 +451,15 @@ class ExportEngine:
             finally:
                 src_ds = None
 
-            # Update gpkg_contents
             with gdal.OpenEx(gpkg_path, gdal.OF_UPDATE) as ds:
                 ds.ExecuteSQL(
-                    f"UPDATE gpkg_contents SET table_name = '{table_name}', "
-                    f"identifier = '{table_name}' WHERE table_name = '{tmp_name}'"
+                    "UPDATE gpkg_contents SET table_name = ?, "
+                    "identifier = ? WHERE table_name = ?",
+                    None,
+                    [table_name, table_name, tmp_name],
                 )
 
-            return True, ""
+            return True, ""  # noqa: TRY300
 
         except Exception as exc:
             return False, str(exc)
@@ -475,12 +470,10 @@ class ExportEngine:
         expression: str,
         driver_name: str = "",
         target_crs_authid: str = "",
-        field_names: Optional[List[str]] = None,
-    ) -> Tuple[Optional[QgsVectorLayer], int, str]:
-        """Create in-memory clone with filter expression and optional CRS reprojection.
+        field_names: list[str] | None = None,
+    ) -> tuple[QgsVectorLayer | None, int, str]:
+        """Create an in-memory vector layer clone with filter, CRS reprojection, and field subset.
 
-        Drops 'fid' field for GPKG driver. Never sets subset string on source.
-        *field_names* restricts which attribute columns to include (None = all).
         Returns (memory_layer, feature_count, error_message).
         """
         drop_fid = driver_name.upper() == "GPKG"
@@ -534,9 +527,13 @@ class ExportEngine:
         for src_feat in iterator:
             feat = QgsFeature(mem.fields())
             geom = src_feat.geometry()
-            if transform is not None and geom is not None and not geom.isNull():
-                if geom.transform(transform) != 0:
-                    return None, 0, "Geometry transformation failed"
+            if (
+                transform is not None
+                and geom is not None
+                and not geom.isNull()
+                and geom.transform(transform) != 0
+            ):
+                return None, 0, "Geometry transformation failed"
             feat.setGeometry(geom)
             feat.setAttributes([src_feat[i] for i in kept_indexes])
             feat.setId(-1)
@@ -554,8 +551,8 @@ class ExportEngine:
         layer: QgsMapLayer,
         spec: ExportSpec,
         result: ExportResult,
-    ) -> Optional[QgsCoordinateReferenceSystem]:
-        """Return target CRS from spec or fall back to source layer CRS."""
+    ) -> QgsCoordinateReferenceSystem | None:
+        """Return the target CRS from spec, or fall back to the source layer CRS."""
         target = spec.target_crs_authid.strip()
         if not target:
             return layer.crs()
@@ -567,7 +564,7 @@ class ExportEngine:
 
     @staticmethod
     def _replace_project_source(spec: ExportSpec, result: ExportResult) -> None:
-        """Repoint project layer to the newly written export file."""
+        """Repoint the project layer to the newly written export file."""
         layer = QgsProject.instance().mapLayer(spec.source_layer_id)
         if layer is None:
             return
@@ -584,5 +581,7 @@ class ExportEngine:
             layer.setDataSource(new_uri, layer.name(), "ogr", provider_opts)
         except Exception as exc:
             logger.warning(
-                "Could not replace data source for '%s': %s", layer.name(), exc
+                "Could not replace data source for '%s': %s",
+                layer.name(),
+                exc,
             )

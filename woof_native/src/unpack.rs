@@ -1,13 +1,24 @@
+//! .woof archive unpacker. Provides v2 (legacy flat table) and v3 (seek table + xxhash
+//! integrity verification) decoders, plus `PyO3` bridge functions.
+
+#![allow(
+    clippy::useless_conversion,
+    clippy::cast_possible_truncation,
+    reason = "pyo3 bridges and binary format parsing use intentional casts"
+)]
+
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use std::collections::HashMap;
 
-use crate::entry::*;
+use crate::entry::{
+    SeekEntry, FLAG_ENTRY_ZSTD, V2_HEADER_SIZE, V3_HEADER_SIZE, WOOF_MAGIC, WOOF_VERSION_V2,
+    WOOF_VERSION_V3,
+};
 use crate::error::WoofError;
 use crate::seek_table;
 
-// ── v2 (legacy, unchanged) ───────────────────────────────────────
-
+/// Unpack entries from the legacy v2 format.
 pub fn unpack_v2(data: &[u8]) -> Result<Vec<(String, Vec<u8>)>, WoofError> {
     if data.len() < V2_HEADER_SIZE {
         return Err(WoofError::Truncated(0));
@@ -18,12 +29,17 @@ pub fn unpack_v2(data: &[u8]) -> Result<Vec<(String, Vec<u8>)>, WoofError> {
         return Err(WoofError::BadMagic);
     }
 
-    let version = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    let version = u32::from_le_bytes(
+        data[4..8]
+            .try_into()
+            .expect("data.len() >= V2_HEADER_SIZE checked above"),
+    );
     if version != WOOF_VERSION_V2 {
         return Err(WoofError::BadVersion(version));
     }
 
-    let payload_size = u64::from_le_bytes(data[16..24].try_into().unwrap()) as usize;
+    let payload_size =
+        u64::from_le_bytes(data[16..24].try_into().expect("V2_HEADER_SIZE >= 24")) as usize;
     if V2_HEADER_SIZE + payload_size > data.len() {
         return Err(WoofError::Truncated(V2_HEADER_SIZE + payload_size));
     }
@@ -36,9 +52,16 @@ pub fn unpack_v2(data: &[u8]) -> Result<Vec<(String, Vec<u8>)>, WoofError> {
             return Err(WoofError::Truncated(offset + 8));
         }
 
-        let flags = u32::from_le_bytes(payload[offset..offset + 4].try_into().unwrap());
-        let name_len =
-            u32::from_le_bytes(payload[offset + 4..offset + 8].try_into().unwrap()) as usize;
+        let flags = u32::from_le_bytes(
+            payload[offset..offset + 4]
+                .try_into()
+                .expect("payload bounds checked above"),
+        );
+        let name_len = u32::from_le_bytes(
+            payload[offset + 4..offset + 8]
+                .try_into()
+                .expect("payload bounds checked above"),
+        ) as usize;
         offset += 8;
 
         if offset + name_len > payload.len() {
@@ -52,7 +75,11 @@ pub fn unpack_v2(data: &[u8]) -> Result<Vec<(String, Vec<u8>)>, WoofError> {
             return Err(WoofError::Truncated(offset + 8));
         }
 
-        let data_len = u64::from_le_bytes(payload[offset..offset + 8].try_into().unwrap()) as usize;
+        let data_len = u64::from_le_bytes(
+            payload[offset..offset + 8]
+                .try_into()
+                .expect("payload bounds checked above"),
+        ) as usize;
         offset += 8;
 
         if offset + data_len > payload.len() {
@@ -73,6 +100,7 @@ pub fn unpack_v2(data: &[u8]) -> Result<Vec<(String, Vec<u8>)>, WoofError> {
     Ok(entries)
 }
 
+/// `PyO3` bridge for v2 unpack. Returns a Python dict.
 #[pyfunction]
 pub fn unpack_v2_py(py: Python<'_>, data: &[u8]) -> PyResult<HashMap<String, Py<PyBytes>>> {
     let entries = unpack_v2(data)?;
@@ -83,10 +111,8 @@ pub fn unpack_v2_py(py: Python<'_>, data: &[u8]) -> PyResult<HashMap<String, Py<
     Ok(map)
 }
 
-// ── v3 (seek table + integrity) ─────────────────────────────────
-
-/// Reads header, parses seek table, returns (seek_entries, payload_slice, total_raw)
-fn parse_v3_archive<'a>(data: &'a [u8]) -> Result<(Vec<SeekEntry>, &'a [u8], u64), WoofError> {
+/// Parse the v3 header and seek table, returning `(seek_entries, payload_slice, total_raw)`.
+fn parse_v3_archive(data: &[u8]) -> Result<(Vec<SeekEntry>, &[u8], u64), WoofError> {
     if data.len() < V3_HEADER_SIZE {
         return Err(WoofError::Truncated(data.len()));
     }
@@ -95,15 +121,35 @@ fn parse_v3_archive<'a>(data: &'a [u8]) -> Result<(Vec<SeekEntry>, &'a [u8], u64
         return Err(WoofError::BadMagic);
     }
 
-    let version = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    let version = u32::from_le_bytes(
+        data[4..8]
+            .try_into()
+            .expect("data.len() >= V3_HEADER_SIZE checked above"),
+    );
     if version != WOOF_VERSION_V3 {
         return Err(WoofError::BadVersion(version));
     }
 
-    let seek_offset = u64::from_le_bytes(data[16..24].try_into().unwrap()) as usize;
-    let payload_offset = u64::from_le_bytes(data[24..32].try_into().unwrap()) as usize;
-    let payload_size = u64::from_le_bytes(data[32..40].try_into().unwrap()) as usize;
-    let total_raw = u64::from_le_bytes(data[40..48].try_into().unwrap());
+    let seek_offset = u64::from_le_bytes(
+        data[16..24]
+            .try_into()
+            .expect("V3_HEADER_SIZE >= 48 checked above"),
+    ) as usize;
+    let payload_offset = u64::from_le_bytes(
+        data[24..32]
+            .try_into()
+            .expect("V3_HEADER_SIZE >= 48 checked above"),
+    ) as usize;
+    let payload_size = u64::from_le_bytes(
+        data[32..40]
+            .try_into()
+            .expect("V3_HEADER_SIZE >= 48 checked above"),
+    ) as usize;
+    let total_raw = u64::from_le_bytes(
+        data[40..48]
+            .try_into()
+            .expect("V3_HEADER_SIZE >= 48 checked above"),
+    );
 
     if seek_offset > data.len() || payload_offset > data.len() {
         return Err(WoofError::Truncated(data.len()));
@@ -118,6 +164,7 @@ fn parse_v3_archive<'a>(data: &'a [u8]) -> Result<(Vec<SeekEntry>, &'a [u8], u64
     Ok((seek_entries, payload, total_raw))
 }
 
+/// Unpack all entries from a v3 archive. Verifies per-entry xxhash3-64 checksums.
 pub fn unpack_v3(data: &[u8]) -> Result<Vec<(String, Vec<u8>)>, WoofError> {
     let (seek_entries, payload, _) = parse_v3_archive(data)?;
 
@@ -139,7 +186,6 @@ pub fn unpack_v3(data: &[u8]) -> Result<Vec<(String, Vec<u8>)>, WoofError> {
             raw.to_vec()
         };
 
-        // Verify per-entry checksum
         let computed = xxhash_rust::xxh3::xxh3_64(&decompressed);
         if computed != entry.hash {
             return Err(WoofError::ChecksumMismatch(entry.name.clone()));
@@ -151,6 +197,10 @@ pub fn unpack_v3(data: &[u8]) -> Result<Vec<(String, Vec<u8>)>, WoofError> {
     Ok(results)
 }
 
+/// Unpack a single entry by name from a v3 archive. O(log n) via binary search on the seek table.
+///
+/// # Errors
+/// Returns `WoofError` if the entry is not found, decompression fails, or checksum mismatch.
 pub fn unpack_one(data: &[u8], name: &str) -> Result<Vec<u8>, WoofError> {
     let (seek_entries, payload, _) = parse_v3_archive(data)?;
 
@@ -169,11 +219,7 @@ pub fn unpack_one(data: &[u8], name: &str) -> Result<Vec<u8>, WoofError> {
         let mut dctx =
             zstd::bulk::Decompressor::new().map_err(|e| WoofError::Decompress(e.to_string()))?;
         dctx.decompress(raw, entry.raw_size as usize)
-            .unwrap_or_else(|_| {
-                zstd::decode_all(raw)
-                    .map_err(|e| WoofError::Decompress(e.to_string()))
-                    .unwrap()
-            })
+            .or_else(|_| zstd::decode_all(raw).map_err(|e| WoofError::Decompress(e.to_string())))?
     } else {
         raw.to_vec()
     };
@@ -186,13 +232,13 @@ pub fn unpack_one(data: &[u8], name: &str) -> Result<Vec<u8>, WoofError> {
     Ok(decompressed)
 }
 
+/// List all seek entries from a v3 archive without decompressing payloads.
 pub fn list_entry_infos(data: &[u8]) -> Result<Vec<SeekEntry>, WoofError> {
     let (seek_entries, _, _) = parse_v3_archive(data)?;
     Ok(seek_entries)
 }
 
-// ── PyO3 bridges ─────────────────────────────────────────────────
-
+/// `PyO3` bridge for v3 unpack. Returns a Python dict of all entries.
 #[pyfunction]
 pub fn unpack_v3_py(py: Python<'_>, data: &[u8]) -> PyResult<HashMap<String, Py<PyBytes>>> {
     let (seek_entries, payload, _) = parse_v3_archive(data)?;
@@ -233,6 +279,7 @@ pub fn unpack_v3_py(py: Python<'_>, data: &[u8]) -> PyResult<HashMap<String, Py<
     Ok(map)
 }
 
+/// `PyO3` bridge for single-entry lookup. Returns the decompressed bytes for one entry.
 #[pyfunction]
 pub fn unpack_one_py(py: Python<'_>, data: &[u8], name: &str) -> PyResult<Py<PyBytes>> {
     let (seek_entries, payload, _) = parse_v3_archive(data)?;
@@ -267,7 +314,10 @@ pub fn unpack_one_py(py: Python<'_>, data: &[u8], name: &str) -> PyResult<Py<PyB
     }
 }
 
+/// `PyO3` bridge for listing entry metadata without decompression.
+/// Returns a list of `(name, flags, data_size, raw_size, hash)` tuples.
 #[pyfunction]
+#[allow(clippy::type_complexity)]
 pub fn list_entries_py(data: &[u8]) -> PyResult<Vec<(String, u32, u64, u64, u64)>> {
     let entries = list_entry_infos(data)?;
     Ok(entries

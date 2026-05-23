@@ -1,7 +1,6 @@
-"""Pure-data classes: ExportSpec (single export job) and ExportResult (outcome)."""
+"""Pure-data classes: ExportSpec (single export job), ExportResult (outcome), StyleMode (constants)."""
 
 from dataclasses import dataclass
-from typing import List
 
 
 class StyleMode:
@@ -16,33 +15,7 @@ class StyleMode:
 
 @dataclass
 class ExportSpec:
-    """Describes a single layer export job. Pure data -- never holds layer references.
-
-    Stores the source layer ID instead of a QgsMapLayer object so the engine
-    looks it up at write time.
-
-    Parameters
-    ----------
-    source_layer_id : str
-        ID of the source QgsMapLayer in the current project.
-    export_name : str
-        Output layer/table name and file stem. Independent of live layer name.
-    target_mode : str
-        'single' -> each layer to its own file; 'gpkg' -> table in one GeoPackage.
-    output_path : str
-        For 'single': output directory. For 'gpkg': full .gpkg path.
-    driver : str
-        OGR driver string: 'GPKG', 'ESRI Shapefile', 'GeoJSON', 'KML',
-        'FlatGeobuf', 'GTiff'.
-    filter_expression : str
-        Optional QGIS expression filter. Empty = all features.
-    style_mode : str
-        One of StyleMode constants: NONE, QML, SLD, BOTH, EMBED.
-    replace_in_project : bool
-        If True, calls setDataSource on the project layer after successful export.
-    target_crs_authid : str
-        Target CRS in WKT or EPSG:AUTHID form. Empty = source layer CRS.
-    """
+    """Describes a single layer export job. Stores the source layer ID (not a QgsMapLayer reference) for thread safety."""
 
     source_layer_id: str = ""
     source_name: str = ""
@@ -54,7 +27,7 @@ class ExportSpec:
     style_mode: str = "none"
     replace_in_project: bool = False
     target_crs_authid: str = ""
-    field_names: List[str] = None
+    field_names: list[str] = None
 
     @property
     def is_raster_driver(self) -> bool:
