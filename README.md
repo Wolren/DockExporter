@@ -2,36 +2,36 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![QGIS](https://img.shields.io/badge/QGIS-3.22+-green)](https://www.qgis.org/)
+[![QGIS 3.22+](https://img.shields.io/badge/QGIS-3.22+-green)](https://www.qgis.org/)
+[![QGIS 4.0+](https://img.shields.io/badge/QGIS-4.0+-green)](https://www.qgis.org/)
 [![Qt](https://img.shields.io/badge/Qt-5.x_|_6.x-green)](https://www.qt.io/)
 
-A spec-driven export plugin for QGIS. Select layers once, configure everything in one place — names, formats, filters, CRS, styles, field subsets — and export to single files, GeoPackage, or portable `.woof` / ZIP archives. Never mutates live project layers.
+Export layers from QGIS without the repetitive clicking. Pick your layers, set things up once, and export to single files, a multi-layer GeoPackage, or a portable `.woof` / ZIP archive.
 
 ---
 
 ## What problem does this solve?
 
-Normally in QGIS, exporting layers means repeating the same steps over and over: right-click → Export → pick format → pick path → repeat. Need the same layer in three formats? Do it three times. Want to filter, reproject, and apply a style? That's more dialogs per layer. Have a project with 20 layers to share? Export them one by one or zip the project file and hope the file paths match.
+Normally in QGIS, exporting a few layers means right-click → Export → pick format → pick path → repeat. Need the same layer in three formats? Do it three times. Want to filter, reproject, and style? More dialogs per layer. Sharing a 20-layer project? Export them one by one or zip the project file and hope the file paths match.
 
-Dock Export replaces all of that with a single dock:
+Dock Export replaces that with one dock, combining what would normally take multiple plugins (style exporter + project exporter + multi-format batch export) into a single tool:
 
-- **Select layers once** — check what you need from one list
-- **Configure everything in one place** — rename, filter, reproject, subset fields, apply styles per layer
-- **Export in one click** — single files (multiple formats per layer), one multi-layer GeoPackage, or a fully self-contained archive (`.woof` / `.zip`) with rewritten project XML
-
-It's a shortcut for: *I need to get data out of QGIS without busywork.*
+- **Select layers once** from a single list
+- **Configure everything in one place** — rename, filter, reproject, pick fields, apply styles
+- **Export in one click** — single files, one GeoPackage, or a self-contained `.woof` / ZIP archive with rewritten project paths
 
 ---
 
 ### Gallery
 
-| Single Files Tab | GeoPackage Tab | Project Export Tab | History Tab |
-| ---------------- | -------------- | ------------------ | ----------- |
+
+| Single Files Tab                            | GeoPackage Tab                          | Project Export Tab                             | History Tab                             |
+| ------------------------------------------- | --------------------------------------- | ---------------------------------------------- | --------------------------------------- |
 | ![Single files tab](gallery/single-tab.png) | ![GeoPackage tab](gallery/gpkg-tab.png) | ![Project export tab](gallery/project-tab.png) | ![History tab](gallery/history-tab.png) |
 
 ---
 
-## Pipeline
+## How it works
 
 ```mermaid
 flowchart LR
@@ -54,61 +54,66 @@ flowchart LR
 
 ### Export modes
 
-| Mode | What it does | Best for |
-|------|-------------|----------|
-| **Single Files** | Each selected layer → one or more files in a directory (GPKG, Shapefile, GeoJSON, GeoTIFF, ...) | Delivering layers individually, converting formats, archiving in a folder structure |
-| **GeoPackage** | All selected layers → a single `.gpkg` file with separate tables | Sharing many layers as one file, embedding in other projects |
-| **Project Export** | Entire project → `.woof` archive or `.zip`, with all source files + rewritten project XML | Sending the whole project to someone, backup, moving between machines |
+
+| Mode               | What it does                                                                        | Best for                                                              |
+| ------------------ | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| **Single Files**   | Each layer → one or more files in a folder (GPKG, Shapefile, GeoTIFF, ...)         | Sending layers individually, converting formats, archiving in folders |
+| **GeoPackage**     | All layers → one`.gpkg` with separate tables                                       | Sharing many layers as one file                                       |
+| **Project Export** | Whole project →`.woof` archive or `.zip` with source files + rewritten project XML | Sending a project to someone, backups, moving between machines        |
 
 ### Per-layer controls
 
-- **Export name** — rename per layer independently of the source name; naming template with `{layer_name}`, `{date}`, `{crs}`, `{datetime}` placeholders
-- **QGIS expression filter** — per-layer `WHERE` clause using `QgsExpression` (field list, function tree, search, validation)
-- **CRS reprojection** — per-layer target CRS via native QGIS projection selector
-- **Field subset** — choose which attributes to include per layer
-- **Format override** — per-layer driver override (e.g. force a specific layer to Shapefile while the rest use GPKG)
+- **Rename** — per-layer export name with `{layer_name}`, `{date}`, `{crs}`, `{datetime}` placeholders
+- **Filter** — per-layer QGIS expression (`WHERE` clause) with field list, function tree, search, validation
+- **Reproject** — per-layer CRS via the native QGIS projection picker
+- **Field subset** — pick which attributes to include
+- **Format override** — force a specific driver for a layer (e.g. Shapefile while the rest use GPKG)
 
-### Vector formats
+### Formats
 
-GPKG, ESRI Shapefile, GeoJSON, KML, CSV, FlatGeobuf, GPX, GML, TopoJSON, SQLite, SpatiaLite, Newline-delimited GeoJSON, DXF, DGN, MapInfo TAB, GeoParquet, Arrow, MBTiles, ESRI FileGDB, GeoRSS, XLSX, ODS.
+**Vector** — detected from GDAL at runtime (about 36 write-capable drivers). Known ones:
 
-### Raster formats
+GPKG, ESRI Shapefile, GeoJSON, GeoJSON (Newline Delimited), KML, LIBKML, CSV, FlatGeobuf, GPX, GML, TopoJSON, SQLite, SpatiaLite, DXF, DGN, MapInfo TAB, GeoParquet, Arrow, MBTiles, OpenFileGDB, ESRI FileGDB, GeoRSS, MVT, PMTiles, JSONFG (OGC JSON), MapML, PDF (Geospatial), VDV, JML (OpenJUMP), PGDUMP (PostgreSQL SQL), MiraMon Vector, GMT ASCII, Selafin, WAsP, XLSX, ODS.
 
-GeoTIFF, PNG, JPEG, JPEG2000, WebP, BMP, MBTiles, ERDAS Imagine.
+> Database/cloud drivers (MySQL, PostgreSQL, Oracle, Carto, etc.) are excluded — they need live connections, not file paths.
 
-### Style management
+**Raster** — also detected at runtime (21+ write-capable drivers). Known ones:
 
-- **QML sidecars** — per-layer `.qml` files next to the export
-- **SLD sidecars** — per-layer `.sld` files (vector only)
-- **Embed in GPKG** — styles stored in the `layer_styles` table (works with Single Files GPKG and GeoPackage tab)
+GeoTIFF, Cloud Optimized GeoTIFF, Virtual Raster, ENVI, EHdr (ESRI BIL), PNG, JPEG, JPEG XL, GIF, NetCDF, BMP, MBTiles, ERDAS Imagine (.img), PCIDSK, NITF, GRIB, SAGA GIS, Zarr, AAIGrid (ASCII), XYZ Grid, PDF (Geospatial), PCRaster, ILWIS, RST (Idrisi), ZMap, SIGDEM.
+
+### Styles
+
+- **QML sidecars** — `.qml` files next to exported files
+- **SLD sidecars** — `.sld` files (vector only)
+- **Embed in GPKG** — styles stored in the `layer_styles` table (Single Files GPKG and GeoPackage tab)
 
 ### Archive export (.woof / ZIP)
 
-- **.woof** — native Rust archive format with xxhash3-64 integrity verification, seek table for random access, per-entry zstd compression, parallel decompression
-- **ZIP** — standard deflate compression via Python `zipfile`
-- **Compression levels** — None / Normal / Heavy (maps to zstd levels 0 / 3 / 9)
-- **Handles remote layers** — WMS, WFS, PostGIS, etc. keep their original datasource URLs in the project XML
-- **Handles sidecars** — QML, SLD, world files (`.tfw`, `.pgw`, `.jgw`, ...) alongside source files are collected automatically
-- **Project resources** — layout images, SVGs, HTML items, report templates are included
-- **XML rewriting** — datasource paths in the project file are rewritten to archive-relative paths
+- **.woof** — Rust native archive format: xxhash3-64 integrity checks, seek table for random access, per-entry zstd compression, parallel decompression
+- **ZIP** — standard deflate via Python `zipfile`
+- **Compression** — None / Normal / Heavy (woof: zstd 0 / 3 / 9; ZIP: STORE / DEFLATE+6 / DEFLATE+9)
+- **Remote layers** — WMS, WFS, PostGIS, etc. keep their original datasource URLs
+- **Sidecars** — QML, SLD, world files (`.tfw`, `.pgw`, `.jgw`, ...) are collected automatically
+- **Project resources** — layout images, SVGs, HTML items, report templates included
+- **ArcGIS Pro integration** — check "Generate ArcPy script" in the Project Export tab to embed `open_in_arcgis_pro.py` + `layer_tree.json` inside the archive. After extraction, running the script recreates your QGIS layer groups as an ArcGIS Pro project.
 
 ### QGIS integration
 
-- Docks inside the QGIS main window (not a modal dialog)
-- Right-click any layer → opens Dock Export with that layer preselected
-- `.woof` opener injected into Project → Open From submenu
-- Auto-refresh when layers are added, removed, or renamed
-- Settings persist across QGIS sessions via `QgsSettings`
+- Docks in the main QGIS window
+- Right-click a layer → opens Dock Export with it preselected
+- `.woof` files open from Project → Open From → Open `.woof` Project
+- Auto-refreshes when layers are added, removed, or renamed
+- Settings persist between sessions via `QgsSettings`
 
 ---
 
-## .woof Archive Format
+## .woof Format
 
-`.woof` is a portable, self-contained snapshot of a QGIS project. It bundles every file the project depends on — vector datasets, rasters, GeoPackages, QML/SLD styles, world files, layout images, SVGs, report templates, and the project file itself with all datasource paths rewritten to relative references inside the archive.
+A `.woof` file is a single-file snapshot of a QGIS project. It bundles every file the project depends on — vector datasets, rasters, GeoPackages, styles, world files, layout images, SVGs, report templates — plus the project file itself with all paths rewritten to relative references inside the archive.
 
-`.woof` files are opened directly from QGIS via Project → Open From → Open `.woof` Project. The archive is extracted in-memory and the project loads with all paths resolved — no broken links, no missing sidecars. Remote layers (WMS, WFS, PostGIS) keep their original URLs and are not packaged; scratch and memory layers are noted as not packaged.
+Open it from QGIS via Project → Open From → Open `.woof` Project. The archive is extracted in memory and the project loads with all paths resolved. Remote layers keep their original URLs. Scratch and memory layers are noted as not packaged.
 
-The archive format is implemented as a native Rust crate (`native_woof_impl`) exposed to Python via PyO3. Each file in the archive is stored as a separate entry with its own zstd compression level, xxhash3-64 integrity hash, and seek-table metadata that allows random access — you can extract a single file without decompressing the entire archive. Decompression runs in parallel across entries for fast extraction.
+The native Rust crate (`native_woof_impl`) powers the format: each entry has its own zstd compression level, xxhash3-64 hash, and seek-table metadata for random access. Decompression runs in parallel for fast extraction.
 
 ## License
 
