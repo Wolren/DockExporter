@@ -1,16 +1,17 @@
 [general]
 name=Dock Export
-description=Spec-driven export of vector and raster layers to single files or GeoPackage, with per-layer renamed export names, QGIS expression filtering, and style management. Never renames live project layers.
-about=Exports vector and raster layers to various formats (GeoPackage, Shapefile, GeoJSON, KML, GeoTIFF) with full control over output names via an editable table. Uses a spec-driven architecture: export names are staged per-item and injected only at write time, so the live layer tree is never mutated. Supports per-layer QGIS expression filtering, QML/SLD style export, in-GPKG style embedding, and optional project layer replacement after export.
+description=Export layers to single files, GeoPackage, or portable archives with per-layer naming, filtering, CRS control, and styles.
+about=Dock-panel export plugin for QGIS. Exports vector/raster layers to GPKG, Shapefile, GeoJSON, GeoTIFF, and 60+ other formats without renaming live layers. Supports per-layer export names, QGIS expression filters, field subsets, CRS reprojection, and QML/SLD/embedded styles. Can package the whole project into a portable .woof archive or ZIP, optionally generating an ArcPy script to open the result in ArcGIS Pro.
 version=1.0.0
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
-author=dock_export
-email=
-homepage=
-tracker=
-repository=
+author=Wolren
+email=wolrenn@outlook.com
+homepage=https://github.com/Wolren/DockExporter
+tracker=https://github.com/Wolren/DockExporter/issues
+repository=https://github.com/Wolren/DockExporter
 icon=icons/dock_export.svg
-tags=export, geopackage, vector, raster, style, filter, dock
+tags=export, geopackage, vector, raster, style, filter, dock, woof, archive
+category=Data
 experimental=False
 deprecated=False

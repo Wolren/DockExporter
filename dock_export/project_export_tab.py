@@ -50,7 +50,7 @@ from qgis.PyQt.QtWidgets import (
 )
 
 from ._utils import collect_sidecar_files
-from .arcpy_helper import generate_script_text, write_companion_files
+from .arcpy_helper import generate_script_text
 from .export_engine import layer_export_block_reason
 from .woof import pack_woof_to_file
 
@@ -720,9 +720,6 @@ class ProjectExportTab(QWidget):
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
-        if tree:
-            write_companion_files(woof_path, tree)
-
         self._finish_export(woof_path, len(path_map), errors, remote_names)
 
     def _do_zip_export(self, zip_path: str, layers: list[QgsMapLayer]) -> None:
@@ -761,9 +758,6 @@ class ProjectExportTab(QWidget):
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
-        if tree:
-            write_companion_files(zip_path, tree)
-
         self._finish_export(zip_path, len(path_map), errors, remote_names)
 
     def _finish_export(
@@ -777,10 +771,8 @@ class ProjectExportTab(QWidget):
         lines = [f"Packaged {count} source files into:", f"  {out_path}"]
         lines.append("\nExtract the archive, then open project.qgs")
         if self._arcpy_cb.isChecked():
-            lines.append(f"\nArcPy helper saved alongside the archive:")
-            lines.append(f"  open_in_arcgis_pro.py")
-            lines.append(f"\nAlso included inside the archive for post-extract use.")
-            lines.append(f"\nFor ZIP: run companion script to auto-extract and launch.")
+            lines.append("\nArcPy helper (open_in_arcgis_pro.py + layer_tree.json)")
+            lines.append("are included inside the archive — extract and run.")
         if remote_names:
             lines.append(f"\nRemote layers (not packaged): {', '.join(remote_names)}")
         if errors:

@@ -2,7 +2,6 @@
 
 import json
 import os
-import subprocess
 import sys
 import textwrap
 
@@ -113,95 +112,3 @@ def generate_script_text() -> str:
             aprx = main(tree, script_dir)
             print("Created:", aprx)
     """)
-
-
-def _get_script_dir() -> str:
-    """Return __file__ dir safely even when exec'd."""
-    try:
-        return os.path.dirname(os.path.abspath(__file__))
-    except NameError:
-        return os.getcwd()
-
-
-def companion_for_zip(out_dir: str, archive_name: str) -> str:
-    """Generate a companion .py that auto-extracts the sibling ZIP before running."""
-    return textwrap.dedent(f"""\
-        \"\"\"Auto-extract sibling ZIP archive and open in ArcGIS Pro.\"\"\"
-        from __future__ import annotations
-
-        import json
-        import os
-        import subprocess
-        import sys
-        import zipfile
-
-
-        def _find_pro_python() -> str:
-            candidates = [\"propy\", \"propy.bat\"]
-            for c in candidates:
-                try:
-                    subprocess.run([c, \"--version\"], capture_output=True, timeout=5)
-                    return c
-                except (FileNotFoundError, subprocess.TimeoutExpired):
-                    pass
-            prog_files = os.environ.get(\"ProgramFiles\", \"C:\\\\Program Files\")
-            path = os.path.join(prog_files, \"ArcGIS\", \"Pro\", \"bin\", \"Python\", \"envs\", \"arcgispro-py3\", \"python.exe\")
-            if os.path.exists(path):
-                return path
-            extra = os.environ.get(\"ProgramFiles(x86)\", \"C:\\\\Program Files (x86)\")
-            path = os.path.join(extra, \"ArcGIS\", \"Pro\", \"bin\", \"Python\", \"envs\", \"arcgispro-py3\", \"python.exe\")
-            if os.path.exists(path):
-                return path
-            return \"python\"
-
-
-        def main() -> None:
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            archive_path = os.path.join(script_dir, {archive_name!r})
-
-            if not os.path.exists(archive_path):
-                print(\"Archive not found:\", archive_path)
-                sys.exit(1)
-
-            extract_dir = os.path.join(script_dir, \"extracted\")
-            print(\"Extracting to\", extract_dir)
-            with zipfile.ZipFile(archive_path) as zf:
-                zf.extractall(extract_dir)
-
-            inner_script = os.path.join(extract_dir, \"open_in_arcgis_pro.py\")
-            if os.path.exists(inner_script):
-                pro_python = _find_pro_python()
-                print(\"Running with\", pro_python)
-                subprocess.run([pro_python, inner_script], cwd=extract_dir)
-            else:
-                tree_path = os.path.join(extract_dir, \"layer_tree.json\")
-                if os.path.exists(tree_path):
-                    sys.path.insert(0, extract_dir)
-                    from open_in_arcgis_pro import main as arcpy_main
-                    with open(tree_path) as f:
-                        tree = json.load(f)
-                    aprx_path = arcpy_main(tree, extract_dir)
-                    print(\"Created:\", aprx_path)
-                else:
-                    print(\"No layer_tree.json or open_in_arcgis_pro.py found in archive\")
-                    sys.exit(1)
-
-
-        if __name__ == \"__main__\":
-            main()
-    """)
-
-
-def write_companion_files(archive_path: str, tree: dict) -> None:
-    """Write companion script alongside the archive."""
-    out_dir = os.path.dirname(archive_path)
-    archive_name = os.path.basename(archive_path)
-    ext = os.path.splitext(archive_path)[1].lower()
-
-    companion_py = os.path.join(out_dir, "open_in_arcgis_pro.py")
-    if ext == ".zip":
-        py_content = companion_for_zip(out_dir, archive_name)
-    else:
-        py_content = generate_script_text()
-    with open(companion_py, "w", encoding="utf-8") as f:
-        f.write(py_content)

@@ -97,15 +97,16 @@ jobs:
         shell: pwsh
         run: |
           $tag = "v${{ steps.metadata.outputs.version }}"
-          $existing = git tag -l "$tag"
-          if (-not $existing) {
+          $remote = git ls-remote --tags origin "refs/tags/$tag"
+          if ($remote) {
+            "created=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            Write-Host "Tag $tag already exists on remote, skipping"
+          } else {
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git tag -a $tag -m "Release $tag"
             git push origin $tag
             "created=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          } else {
-            "created=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           }
 
       - name: Create release
