@@ -17,6 +17,7 @@ from qgis.core import (
     QgsFeatureRequest,
     QgsFeatureSink,
     QgsFields,
+    QgsGeometry,
     QgsMapLayer,
     QgsProject,
     QgsRasterBlockFeedback,
@@ -157,9 +158,52 @@ class ExportEngine:
         if target_crs is None:
             return
 
+        if (
+            spec.driver in {"GeoRSS", "GML", "KML"}
+            and target_crs.authid() != "EPSG:4326"
+        ):
+            target_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+
+        no_attribute_drivers = {"DXF", "DGN"}
+
+        rss_compatible_fields: set[str] = {
+            "title",
+            "description",
+            "link",
+            "author",
+            "author_name",
+            "author_email",
+            "author_link",
+            "category",
+            "category_label",
+            "category_scheme",
+            "comments",
+            "pubdate",
+            "source",
+            "source_url",
+            "guid",
+            "guid_permalink",
+        }
+
+        needs_no_attributes = spec.driver in no_attribute_drivers
         use_safe_clone = (
-            bool(spec.filter_expression.strip()) or target_crs != layer.crs()
+            bool(spec.filter_expression.strip())
+            or target_crs != layer.crs()
+            or bool(spec.field_names)
+            or needs_no_attributes
         )
+
+        clone_field_names = spec.field_names
+        if needs_no_attributes:
+            clone_field_names = []
+        elif spec.driver == "GeoRSS":
+            compatible = [
+                f.name()
+                for f in layer.fields()
+                if f.name().lower() in rss_compatible_fields
+            ]
+            clone_field_names = compatible
+            use_safe_clone = True
 
         if use_safe_clone:
             source, n_feats, clone_error = self._make_filtered_clone(
@@ -167,7 +211,7 @@ class ExportEngine:
                 spec.filter_expression if spec.filter_expression.strip() else "",
                 spec.driver,
                 target_crs.authid(),
-                field_names=spec.field_names,
+                field_names=clone_field_names,
             )
             if source is None:
                 result.error = clone_error or "Could not build filtered/safe clone"
@@ -177,29 +221,6 @@ class ExportEngine:
         else:
             write_source = layer
             result.features_written = layer.featureCount()
-
-            if spec.driver == "GPKG" or is_gpkg_mode:
-                opts.attributes = [
-                    i
-                    for i in range(layer.fields().count())
-                    if layer.fields()[i].name().lower() != "fid"
-                ]
-
-        if spec.field_names:
-            if opts.attributes is not None:
-                existing = set(opts.attributes)
-                indices = [
-                    i
-                    for i in range(layer.fields().count())
-                    if layer.fields()[i].name() in spec.field_names and i in existing
-                ]
-                opts.attributes = indices
-            else:
-                opts.attributes = [
-                    i
-                    for i in range(layer.fields().count())
-                    if layer.fields()[i].name() in spec.field_names
-                ]
 
         writer = QgsVectorFileWriter.create(
             output_path,
@@ -227,6 +248,7 @@ class ExportEngine:
             return
 
         needs_reset_id = spec.driver == "GPKG" or is_gpkg_mode
+        needs_z = spec.driver == "DGN"
 
         def _feature_generator():
             for f in write_source.getFeatures():
@@ -234,6 +256,11 @@ class ExportEngine:
                     break
                 if needs_reset_id:
                     f.setId(-1)
+                if needs_z:
+                    geom = f.geometry()
+                    if geom and not geom.is3D():
+                        geom.addZValue(0)
+                        f.setGeometry(geom)
                 yield f
 
         ok = writer.addFeatures(_feature_generator())
@@ -318,9 +345,21 @@ class ExportEngine:
                 result.error = f"GDAL could not open raster source: {src_path}"
                 return
 
+            drv = gdal.GetDriverByName(spec.driver)
+            if drv is None:
+                result.error = f"Raster driver '{spec.driver}' not found"
+                return
+
+            crs = spec.target_crs_authid.strip()
+            if (
+                spec.driver == "MBTiles"
+                and crs
+                and crs not in ("EPSG:4326", "EPSG:3857")
+            ):
+                crs = "EPSG:4326"
             translate_kwargs = {"format": spec.driver}
-            if spec.target_crs_authid.strip():
-                translate_kwargs["outputSRS"] = spec.target_crs_authid.strip()
+            if crs:
+                translate_kwargs["outputSRS"] = crs
             gdal.Translate(output_path, src_ds, **translate_kwargs)
             src_ds = None
 
@@ -476,14 +515,12 @@ class ExportEngine:
 
         Returns (memory_layer, feature_count, error_message).
         """
-        drop_fid = driver_name.upper() == "GPKG"
-
         source_fields = layer.fields()
         kept_indexes = []
         kept_fields = QgsFields()
 
         for idx, field in enumerate(source_fields):
-            if drop_fid and field.name().lower() == "fid":
+            if field.name().lower() == "fid":
                 continue
             if field_names is not None and field.name() not in field_names:
                 continue

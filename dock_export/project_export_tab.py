@@ -7,6 +7,7 @@ Two modes:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -16,6 +17,7 @@ import zipfile
 from osgeo import gdal
 from qgis.core import (
     QgsApplication,
+    QgsLayerTreeNode,
     QgsMapLayer,
     QgsProject,
     QgsRasterLayer,
@@ -27,6 +29,7 @@ from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QGroupBox,
@@ -47,6 +50,7 @@ from qgis.PyQt.QtWidgets import (
 )
 
 from ._utils import collect_sidecar_files
+from .arcpy_helper import generate_script_text, write_companion_files
 from .export_engine import layer_export_block_reason
 from .woof import pack_woof_to_file
 
@@ -337,6 +341,9 @@ class ProjectExportTab(QWidget):
         self._info_label.setStyleSheet("font-size:9pt; color:#555;")
         out_layout.addWidget(self._info_label)
 
+        self._arcpy_cb = QCheckBox("Generate ArcPy script for ArcGIS Pro")
+        out_layout.addWidget(self._arcpy_cb)
+
         layout.addWidget(out_group)
 
         self._progress = QProgressBar()
@@ -372,6 +379,35 @@ class ProjectExportTab(QWidget):
         self._path_edit.setPlaceholderText(
             "Select .woof output path..." if is_woof else "Select .zip output path...",
         )
+
+    def _layer_tree_structure(self) -> dict | None:
+        """Walk the QGIS layer tree and return a JSON-serialisable group/layer hierarchy."""
+        root = QgsProject.instance().layerTreeRoot()
+        if not root:
+            return None
+        return self._walk_tree_node(root)
+
+    @staticmethod
+    def _walk_tree_node(node) -> dict | None:
+        typ = QgsLayerTreeNode.NodeType
+        if node.nodeType() == typ.NodeGroup:
+            children = []
+            for child in node.children():
+                child_data = ProjectExportTab._walk_tree_node(child)
+                if child_data:
+                    children.append(child_data)
+            return {"type": "group", "name": node.name(), "children": children}
+        if node.nodeType() == typ.NodeLayer:
+            layer = node.layer()
+            if layer:
+                src = layer.source()
+                return {
+                    "type": "layer",
+                    "name": layer.name(),
+                    "provider": layer.providerType(),
+                    "source": src,
+                }
+        return None
 
     def _browse_path(self) -> None:
         """Open a save-file dialog for .woof or .zip depending on the current mode."""
@@ -636,6 +672,8 @@ class ProjectExportTab(QWidget):
         return all_files, path_map, tmpdir, errors, remote_names
 
     def _do_woof_export(self, woof_path: str, layers: list[QgsMapLayer]) -> None:
+        tree = self._layer_tree_structure() if self._arcpy_cb.isChecked() else None
+
         result = self._prepare_archive_bundle(layers)
         if result is None:
             return
@@ -651,6 +689,11 @@ class ProjectExportTab(QWidget):
                 qgs = os.path.join(tmpdir, "project.qgs")
                 with open(qgs, "rb") as f:
                     yield "project.qgs", f.read()
+                # Include ArcPy helpers inside the archive
+                if tree:
+                    yield "layer_tree.json", json.dumps(tree, indent=2).encode()
+                    script = generate_script_text()
+                    yield "open_in_arcgis_pro.py", script.encode()
                 for filepath in all_files:
                     norm = os.path.normpath(filepath)
                     arcname = path_map.get(norm)
@@ -677,9 +720,14 @@ class ProjectExportTab(QWidget):
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
+        if tree:
+            write_companion_files(woof_path, tree)
+
         self._finish_export(woof_path, len(path_map), errors, remote_names)
 
     def _do_zip_export(self, zip_path: str, layers: list[QgsMapLayer]) -> None:
+        tree = self._layer_tree_structure() if self._arcpy_cb.isChecked() else None
+
         result = self._prepare_archive_bundle(layers)
         if result is None:
             return
@@ -693,6 +741,10 @@ class ProjectExportTab(QWidget):
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                 qgs = os.path.join(tmpdir, "project.qgs")
                 zf.write(qgs, "project.qgs")
+                # Include ArcPy helpers inside the archive
+                if tree:
+                    zf.writestr("layer_tree.json", json.dumps(tree, indent=2))
+                    zf.writestr("open_in_arcgis_pro.py", generate_script_text())
                 total = len(all_files) + 1
                 self._progress.setMaximum(100)
                 self._progress.setValue(int(100.0 / total))
@@ -709,6 +761,9 @@ class ProjectExportTab(QWidget):
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
+        if tree:
+            write_companion_files(zip_path, tree)
+
         self._finish_export(zip_path, len(path_map), errors, remote_names)
 
     def _finish_export(
@@ -721,6 +776,11 @@ class ProjectExportTab(QWidget):
         self._info_label.setText("Done")
         lines = [f"Packaged {count} source files into:", f"  {out_path}"]
         lines.append("\nExtract the archive, then open project.qgs")
+        if self._arcpy_cb.isChecked():
+            lines.append(f"\nArcPy helper saved alongside the archive:")
+            lines.append(f"  open_in_arcgis_pro.py")
+            lines.append(f"\nAlso included inside the archive for post-extract use.")
+            lines.append(f"\nFor ZIP: run companion script to auto-extract and launch.")
         if remote_names:
             lines.append(f"\nRemote layers (not packaged): {', '.join(remote_names)}")
         if errors:

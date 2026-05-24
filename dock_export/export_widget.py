@@ -51,6 +51,7 @@ VECTOR_FORMAT_DEFS = [
     ("Shapefile", "ESRI Shapefile"),
     ("GeoJSON", "GeoJSON"),
     ("KML", "KML"),
+    ("LIBKML", "LIBKML"),
     ("CSV", "CSV"),
     ("FlatGeobuf", "FlatGeobuf"),
     ("GPX", "GPX"),
@@ -65,20 +66,57 @@ VECTOR_FORMAT_DEFS = [
     ("GeoParquet", "Parquet"),
     ("Arrow", "Arrow"),
     ("MBTiles", "MBTiles"),
+    ("OpenFileGDB", "OpenFileGDB"),
     ("ESRI File Geodatabase", "FileGDB"),
     ("GeoRSS", "GeoRSS"),
+    ("MVT (Mapbox Vector Tiles)", "MVT"),
+    ("PMTiles", "PMTiles"),
+    ("JSONFG (OGC JSON)", "JSONFG"),
+    ("MapML", "MapML"),
+    ("PDF (Geospatial)", "PDF"),
+    ("VDV (Transit Data)", "VDV"),
+    ("JML (OpenJUMP)", "JML"),
+    ("PGDUMP (PostgreSQL SQL)", "PGDUMP"),
+    ("MiraMon Vector", "MiraMonVector"),
+    ("GMT ASCII (.gmt)", "OGR_GMT"),
+    ("Selafin", "Selafin"),
+    ("WAsP (.map)", "WAsP"),
     ("XLSX", "XLSX"),
     ("ODS", "ODS"),
 ]
 RASTER_FORMAT_DEFS = [
     ("GeoTIFF", "GTiff"),
+    ("Cloud Optimized GeoTIFF", "COG"),
+    ("Virtual Raster", "VRT"),
+    ("ENVI (.hdr)", "ENVI"),
+    ("EHdr (ESRI BIL)", "EHdr"),
+    ("ECW (Wavelet)", "ECW"),
     ("PNG", "PNG"),
     ("JPEG", "JPEG"),
     ("JPEG2000", "JPEG2000"),
     ("WebP", "WEBP"),
+    ("JPEG XL", "JPEGXL"),
+    ("GIF", "GIF"),
+    ("NetCDF", "NetCDF"),
     ("BMP", "BMP"),
     ("MBTiles", "MBTiles"),
-    ("ERDAS Imagine", "HFA"),
+    ("ERDAS Imagine (.img)", "HFA"),
+    ("PCIDSK", "PCIDSK"),
+    ("NITF", "NITF"),
+    ("GRIB (.grb)", "GRIB"),
+    ("SAGA GIS (.sdat)", "SAGA"),
+    ("Zarr", "Zarr"),
+    ("AAIGrid (ASCII)", "AAIGrid"),
+    ("DTED", "DTED"),
+    ("SRTMHGT", "SRTMHGT"),
+    ("XYZ Grid", "XYZ"),
+    ("PDF (Geospatial)", "PDF"),
+    ("PCRaster", "PCRaster"),
+    ("ILWIS", "ILWIS"),
+    ("RST (Idrisi)", "RST"),
+    ("ZMap", "ZMap"),
+    ("SIGDEM", "SIGDEM"),
+    ("Terragen", "Terragen"),
 ]
 
 
@@ -894,20 +932,21 @@ class ExportWidget(QWidget):
     def _check_duplicate_names(self, specs: list[ExportSpec]) -> list[ExportSpec]:
         """Check for duplicate export names in single-file mode. Warn and ask user."""
         seen: dict[str, int] = {}
-        dups: list[str] = []
+        dups: list[tuple[str, str]] = []
         for s in specs:
             if s.target_mode == "single":
                 fname = f"{self._sanitize_name(s.export_name)}{s.file_extension}"
                 if fname in seen:
-                    dups.append(s.export_name)
+                    dups.append((s.export_name, s.source_name))
                 else:
                     seen[fname] = 1
         if dups:
+            lines = "\n".join(f"  - '{name}' (layer: {src})" for name, src in dups)
             reply = QMessageBox.warning(
                 self,
                 "Duplicate Export Names",
                 "The following export names will create files with conflicting names:"
-                f"\n{chr(10).join(f'  - {n}' for n in dups)}"
+                f"\n{lines}"
                 "\n\nLater exports will overwrite earlier ones. Continue?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
@@ -1209,7 +1248,7 @@ class ExportWidget(QWidget):
         self._log_view.appendPlainText("\n".join(log_lines))
 
         if fail or was_cancelled:
-            self._tabs.setCurrentIndex(2)
+            self._tabs.setCurrentIndex(3)
 
         if getattr(self, "_add_exported_layers", False):
             for r in results:

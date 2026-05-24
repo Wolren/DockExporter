@@ -13,6 +13,44 @@ class StyleMode:
     EMBED = "embed"
 
 
+RASTER_DRIVERS = frozenset(
+    {
+        "GTiff",
+        "COG",
+        "VRT",
+        "PNG",
+        "JPEG",
+        "JPEG2000",
+        "WEBP",
+        "JPEGXL",
+        "NetCDF",
+        "BMP",
+        "MBTiles",
+        "HFA",
+        "ENVI",
+        "EHdr",
+        "ECW",
+        "GIF",
+        "PCIDSK",
+        "NITF",
+        "GRIB",
+        "SAGA",
+        "Zarr",
+        "AAIGrid",
+        "DTED",
+        "SRTMHGT",
+        "XYZ",
+        "PDF",
+        "PCRaster",
+        "ILWIS",
+        "RST",
+        "ZMap",
+        "SIGDEM",
+        "Terragen",
+    }
+)
+
+
 @dataclass
 class ExportSpec:
     """Describes a single layer export job. Stores the source layer ID (not a QgsMapLayer reference) for thread safety."""
@@ -31,16 +69,7 @@ class ExportSpec:
 
     @property
     def is_raster_driver(self) -> bool:
-        return self.driver in (
-            "GTiff",
-            "PNG",
-            "JPEG",
-            "JPEG2000",
-            "WEBP",
-            "BMP",
-            "HFA",
-            "MBTiles",
-        )
+        return self.driver in RASTER_DRIVERS
 
     @property
     def file_extension(self) -> str:
@@ -50,6 +79,7 @@ class ExportSpec:
             "GeoJSON": ".geojson",
             "GeoJSONSeq": ".geojsonl",
             "KML": ".kml",
+            "LIBKML": ".kml",
             "FlatGeobuf": ".fgb",
             "GPX": ".gpx",
             "GML": ".gml",
@@ -63,16 +93,52 @@ class ExportSpec:
             "Arrow": ".arrow",
             "MBTiles": ".mbtiles",
             "FileGDB": ".gdb",
+            "OpenFileGDB": ".gdb",
             "GeoRSS": ".xml",
+            "MVT": ".mvt",
+            "PMTiles": ".pmtiles",
+            "JSONFG": ".json",
+            "MapML": ".mapml",
+            "PDF": ".pdf",
+            "VDV": ".vdv",
+            "JML": ".jml",
+            "PGDUMP": ".sql",
+            "MiraMonVector": ".pol",
+            "OGR_GMT": ".gmt",
+            "Selafin": ".slf",
+            "WAsP": ".map",
             "XLSX": ".xlsx",
             "ODS": ".ods",
             "GTiff": ".tif",
+            "COG": ".tif",
+            "VRT": ".vrt",
+            "ENVI": ".dat",
+            "EHdr": ".bil",
+            "ECW": ".ecw",
             "PNG": ".png",
             "JPEG": ".jpg",
             "JPEG2000": ".jp2",
             "WEBP": ".webp",
+            "JPEGXL": ".jxl",
+            "GIF": ".gif",
+            "NetCDF": ".nc",
             "BMP": ".bmp",
             "HFA": ".img",
+            "PCIDSK": ".pix",
+            "NITF": ".ntf",
+            "GRIB": ".grb",
+            "SAGA": ".sdat",
+            "Zarr": ".zarr",
+            "AAIGrid": ".asc",
+            "DTED": ".dt2",
+            "SRTMHGT": ".hgt",
+            "XYZ": ".xyz",
+            "PCRaster": ".map",
+            "ILWIS": ".mpr",
+            "RST": ".rst",
+            "ZMap": ".zmap",
+            "SIGDEM": ".sigdem",
+            "Terragen": ".ter",
         }
         return mapping.get(self.driver, ".gpkg")
 
