@@ -1,6 +1,10 @@
 """Pure-data classes: ExportSpec (single export job), ExportResult (outcome), StyleMode (constants)."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
+
+from ._formats import AVAILABLE_RASTER_DRIVERS as RASTER_DRIVERS
 
 
 class StyleMode:
@@ -11,44 +15,6 @@ class StyleMode:
     SLD = "sld"
     BOTH = "both"
     EMBED = "embed"
-
-
-RASTER_DRIVERS = frozenset(
-    {
-        "GTiff",
-        "COG",
-        "VRT",
-        "PNG",
-        "JPEG",
-        "JPEG2000",
-        "WEBP",
-        "JPEGXL",
-        "NetCDF",
-        "BMP",
-        "MBTiles",
-        "HFA",
-        "ENVI",
-        "EHdr",
-        "ECW",
-        "GIF",
-        "PCIDSK",
-        "NITF",
-        "GRIB",
-        "SAGA",
-        "Zarr",
-        "AAIGrid",
-        "DTED",
-        "SRTMHGT",
-        "XYZ",
-        "PDF",
-        "PCRaster",
-        "ILWIS",
-        "RST",
-        "ZMap",
-        "SIGDEM",
-        "Terragen",
-    }
-)
 
 
 @dataclass

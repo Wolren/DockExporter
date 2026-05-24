@@ -22,6 +22,7 @@ from qgis.PyQt.QtWidgets import (
     QTableWidgetItem,
 )
 
+from ._formats import get_raster_formats, get_vector_formats
 from .export_engine import layer_export_block_reason
 from .layer_settings_dialog import LayerSettingsDialog
 
@@ -33,80 +34,8 @@ COL_FILTER = 4
 COL_CRS = 5
 N_COLS = 6
 
-VECTOR_FORMATS = [
-    ("Default", ""),
-    ("GeoPackage", "GPKG"),
-    ("Shapefile", "ESRI Shapefile"),
-    ("GeoJSON", "GeoJSON"),
-    ("KML", "KML"),
-    ("LIBKML", "LIBKML"),
-    ("CSV", "CSV"),
-    ("FlatGeobuf", "FlatGeobuf"),
-    ("GPX", "GPX"),
-    ("GML", "GML"),
-    ("TopoJSON", "TopoJSON"),
-    ("SQLite", "SQLite"),
-    ("SpatiaLite", "SpatiaLite"),
-    ("GeoJSON (Newline Delimited)", "GeoJSONSeq"),
-    ("DXF", "DXF"),
-    ("Microstation DGN", "DGN"),
-    ("MapInfo TAB", "MapInfo File"),
-    ("GeoParquet", "Parquet"),
-    ("Arrow", "Arrow"),
-    ("MBTiles", "MBTiles"),
-    ("OpenFileGDB", "OpenFileGDB"),
-    ("ESRI File Geodatabase", "FileGDB"),
-    ("GeoRSS", "GeoRSS"),
-    ("MVT (Mapbox Vector Tiles)", "MVT"),
-    ("PMTiles", "PMTiles"),
-    ("JSONFG (OGC JSON)", "JSONFG"),
-    ("MapML", "MapML"),
-    ("PDF (Geospatial)", "PDF"),
-    ("VDV (Transit Data)", "VDV"),
-    ("JML (OpenJUMP)", "JML"),
-    ("PGDUMP (PostgreSQL SQL)", "PGDUMP"),
-    ("MiraMon Vector", "MiraMonVector"),
-    ("GMT ASCII (.gmt)", "OGR_GMT"),
-    ("Selafin", "Selafin"),
-    ("WAsP (.map)", "WAsP"),
-    ("XLSX", "XLSX"),
-    ("ODS", "ODS"),
-]
-RASTER_FORMATS = [
-    ("Default", ""),
-    ("GeoTIFF", "GTiff"),
-    ("Cloud Optimized GeoTIFF", "COG"),
-    ("Virtual Raster", "VRT"),
-    ("ENVI (.hdr)", "ENVI"),
-    ("EHdr (ESRI BIL)", "EHdr"),
-    ("ECW (Wavelet)", "ECW"),
-    ("PNG", "PNG"),
-    ("JPEG", "JPEG"),
-    ("JPEG2000", "JPEG2000"),
-    ("WebP", "WEBP"),
-    ("JPEG XL", "JPEGXL"),
-    ("GIF", "GIF"),
-    ("NetCDF", "NetCDF"),
-    ("BMP", "BMP"),
-    ("MBTiles", "MBTiles"),
-    ("ERDAS Imagine (.img)", "HFA"),
-    ("PCIDSK", "PCIDSK"),
-    ("NITF", "NITF"),
-    ("GRIB (.grb)", "GRIB"),
-    ("SAGA GIS (.sdat)", "SAGA"),
-    ("Zarr", "Zarr"),
-    ("AAIGrid (ASCII)", "AAIGrid"),
-    ("DTED", "DTED"),
-    ("SRTMHGT", "SRTMHGT"),
-    ("XYZ Grid", "XYZ"),
-    ("PDF (Geospatial)", "PDF"),
-    ("PCRaster", "PCRaster"),
-    ("ILWIS", "ILWIS"),
-    ("RST (Idrisi)", "RST"),
-    ("ZMap", "ZMap"),
-    ("SIGDEM", "SIGDEM"),
-    ("Terragen", "Terragen"),
-]
+VECTOR_FORMATS = get_vector_formats(include_default=True)
+RASTER_FORMATS = get_raster_formats(include_default=True)
 FORMAT_DEFAULT_KEY = ""
 
 

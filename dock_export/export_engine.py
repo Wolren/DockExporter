@@ -204,6 +204,11 @@ class ExportEngine:
             ]
             clone_field_names = compatible
             use_safe_clone = True
+        elif spec.driver == "GPX":
+            clone_field_names = [
+                f.name() for f in layer.fields() if f.name().lower() != "fid"
+            ]
+            use_safe_clone = True
 
         if use_safe_clone:
             source, n_feats, clone_error = self._make_filtered_clone(
@@ -258,9 +263,13 @@ class ExportEngine:
                     f.setId(-1)
                 if needs_z:
                     geom = f.geometry()
-                    if geom and not geom.is3D():
-                        geom.addZValue(0)
-                        f.setGeometry(geom)
+                    if geom:
+                        try:
+                            if not geom.constGet().is3D():
+                                geom.addZValue(0)
+                                f.setGeometry(geom)
+                        except AttributeError:
+                            pass
                 yield f
 
         ok = writer.addFeatures(_feature_generator())

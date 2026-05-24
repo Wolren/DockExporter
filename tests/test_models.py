@@ -7,6 +7,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from dock_export._formats import AVAILABLE_RASTER_DRIVERS, AVAILABLE_VECTOR_DRIVERS
 from dock_export.models import ExportResult, ExportSpec, StyleMode
 
 
@@ -35,82 +36,11 @@ class TestExportSpec:
         assert spec.field_names is None
 
     def test_known_raster_drivers(self):
-        raster_drivers = {
-            "GTiff",
-            "COG",
-            "VRT",
-            "PNG",
-            "JPEG",
-            "JPEG2000",
-            "WEBP",
-            "JPEGXL",
-            "NetCDF",
-            "BMP",
-            "MBTiles",
-            "HFA",
-            "ENVI",
-            "EHdr",
-            "ECW",
-            "GIF",
-            "PCIDSK",
-            "NITF",
-            "GRIB",
-            "SAGA",
-            "Zarr",
-            "AAIGrid",
-            "DTED",
-            "SRTMHGT",
-            "XYZ",
-            "PDF",
-            "PCRaster",
-            "ILWIS",
-            "RST",
-            "ZMap",
-            "SIGDEM",
-            "Terragen",
-        }
-        for d in raster_drivers:
+        for d in AVAILABLE_RASTER_DRIVERS:
             assert ExportSpec(driver=d).is_raster_driver, f"{d} should be raster"
 
     def test_known_vector_drivers(self):
-        vector_drivers = {
-            "GPKG",
-            "ESRI Shapefile",
-            "GeoJSON",
-            "GeoJSONSeq",
-            "KML",
-            "LIBKML",
-            "FlatGeobuf",
-            "GPX",
-            "GML",
-            "TopoJSON",
-            "SQLite",
-            "SpatiaLite",
-            "DXF",
-            "DGN",
-            "MapInfo File",
-            "Parquet",
-            "Arrow",
-            "MBTiles",
-            "FileGDB",
-            "OpenFileGDB",
-            "GeoRSS",
-            "MVT",
-            "PMTiles",
-            "JSONFG",
-            "MapML",
-            "PDF",
-            "VDV",
-            "JML",
-            "PGDUMP",
-            "MiraMonVector",
-            "OGR_GMT",
-            "Selafin",
-            "WAsP",
-            "XLSX",
-            "ODS",
-        }
-        for d in vector_drivers:
+        for d in AVAILABLE_VECTOR_DRIVERS:
             assert not ExportSpec(driver=d).is_raster_driver, f"{d} should be vector"
 
     def test_file_extension_all(self):

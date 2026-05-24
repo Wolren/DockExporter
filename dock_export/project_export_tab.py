@@ -375,10 +375,18 @@ class ProjectExportTab(QWidget):
 
     def _sync_ui_to_mode(self) -> None:
         is_woof = self._mode == "woof"
-        self._compress_combo.setVisible(is_woof)
         self._path_edit.setPlaceholderText(
             "Select .woof output path..." if is_woof else "Select .zip output path...",
         )
+
+    def _zip_compress_mode(self) -> int:
+        """Return zipfile compression constant for current UI selection."""
+        return zipfile.ZIP_STORED if self._compression == 0 else zipfile.ZIP_DEFLATED
+
+    @staticmethod
+    def _zip_compress_level(compression: int) -> int:
+        """Return compresslevel for ZIP_DEFLATED: 6=normal, 9=heavy."""
+        return {0: 0, 1: 6, 2: 9}.get(compression, 6)
 
     def _layer_tree_structure(self) -> dict | None:
         """Walk the QGIS layer tree and return a JSON-serialisable group/layer hierarchy."""
@@ -735,7 +743,12 @@ class ProjectExportTab(QWidget):
         QgsApplication.processEvents()
 
         try:
-            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            with zipfile.ZipFile(
+                zip_path,
+                "w",
+                self._zip_compress_mode(),
+                compresslevel=self._zip_compress_level(self._compression),
+            ) as zf:
                 qgs = os.path.join(tmpdir, "project.qgs")
                 zf.write(qgs, "project.qgs")
                 # Include ArcPy helpers inside the archive
