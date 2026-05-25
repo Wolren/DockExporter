@@ -2,7 +2,7 @@
 name=Dock Export
 description=Export layers to single files, GeoPackage, or portable archives with per-layer naming, filtering, CRS control, and styles.
 about=Dock-panel export plugin for QGIS. Exports vector/raster layers to GPKG, Shapefile, GeoJSON, GeoTIFF, and 60+ other formats without renaming live layers. Supports per-layer export names, QGIS expression filters, field subsets, CRS reprojection, and QML/SLD/embedded styles. Can package the whole project into a portable .woof archive or ZIP, optionally generating an ArcPy script to open the result in ArcGIS Pro.
-version=1.0.1
+version=1.0.0
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 author=Wolren

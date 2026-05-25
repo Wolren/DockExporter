@@ -150,31 +150,31 @@ class LayerSettingsDialog(QDialog):
         enc_row.addWidget(QLabel("Encoding"))
         self._encoding_combo = _NoWheelComboBox()
         try:
-            encodings = QgsVectorFileWriter.availableEncodings()
+            available = QgsVectorFileWriter.availableEncodings()
         except AttributeError:
             try:
                 from qgis.PyQt.QtCore import QTextCodec
 
                 raw = QTextCodec.availableCodecs()
-                encodings = []
+                available = []
                 for c in raw:
                     if isinstance(c, str):
-                        encodings.append(c)
+                        available.append(c)
                     elif isinstance(c, bytes):
                         try:
-                            encodings.append(c.decode("utf-8"))
+                            available.append(c.decode("utf-8"))
                         except UnicodeDecodeError:
-                            encodings.append(c.decode("latin-1"))
+                            available.append(c.decode("latin-1"))
                     else:
                         try:
-                            encodings.append(bytes(c).decode("utf-8"))
+                            available.append(bytes(c).decode("utf-8"))
                         except (TypeError, AttributeError):
-                            encodings.append(str(c))
-                encodings.sort()
+                            available.append(str(c))
+                available.sort()
             except (ImportError, AttributeError):
                 canon = set(encodings.aliases.aliases.values())
-                encodings = sorted(c for c in canon if not c.startswith("_"))
-        self._encoding_combo.addItems(encodings)
+                available = sorted(c for c in canon if not c.startswith("_"))
+        self._encoding_combo.addItems(available)
         idx = self._encoding_combo.findText(self._current_encoding)
         if idx >= 0:
             self._encoding_combo.setCurrentIndex(idx)

@@ -17,7 +17,7 @@ from qgis.core import (
     QgsSettings,
     QgsVectorLayer,
 )
-from qgis.gui import QgsProjectionSelectionWidget
+from qgis.gui import QgsExtentGroupBox
 from qgis.PyQt.QtCore import QThread
 from qgis.PyQt.QtGui import QTextCursor
 from qgis.PyQt.QtWidgets import (
@@ -25,7 +25,6 @@ from qgis.PyQt.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QFileDialog,
     QGridLayout,
     QGroupBox,
@@ -67,7 +66,7 @@ class FormatDialog(QDialog):
     ):
         super().__init__(parent)
         self.setWindowTitle("Select export formats")
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(550)
 
         layout = QVBoxLayout(self)
 
@@ -78,7 +77,7 @@ class FormatDialog(QDialog):
             cb = QCheckBox(label)
             cb.setChecked(driver in vector_selected)
             self._vec_checks[driver] = cb
-            vec_grid.addWidget(cb, idx // 3, idx % 3)
+            vec_grid.addWidget(cb, idx // 5, idx % 5)
         layout.addWidget(vec_group)
 
         ras_group = QGroupBox("Raster formats")
@@ -88,7 +87,7 @@ class FormatDialog(QDialog):
             cb = QCheckBox(label)
             cb.setChecked(driver in raster_selected)
             self._ras_checks[driver] = cb
-            ras_grid.addWidget(cb, idx // 3, idx % 3)
+            ras_grid.addWidget(cb, idx // 5, idx % 5)
         layout.addWidget(ras_group)
 
         btn_box = QDialogButtonBox(
@@ -485,6 +484,7 @@ class ExportWidget(QWidget):
         }
 
         for table in (self._single_table, self._gpkg_table):
+            table.set_global_formats(self._vector_selected, self._raster_selected)
             table.populate(all_layers)
             for lid, expr in self._filters.items():
                 table.set_filter(lid, expr)
@@ -548,9 +548,7 @@ class ExportWidget(QWidget):
         if ras:
             parts.append(f"{ras} raster")
         if hasattr(self, "_fmt_btn"):
-            self._fmt_btn.setText(
-                f"Formats ({', '.join(parts)})" if parts else "Configure formats",
-            )
+            self._fmt_btn.setText(f"({', '.join(parts)})" if parts else "")
 
     def _configure_formats(self) -> None:
         """Open the format selection dialog and apply the chosen formats."""
@@ -560,6 +558,11 @@ class ExportWidget(QWidget):
             self._raster_selected = dlg.get_raster_selected()
             self._update_format_button_text()
             self._update_export_button_state()
+            for table in (self._single_table, self._gpkg_table):
+                table.set_global_formats(
+                    self._vector_selected,
+                    self._raster_selected,
+                )
 
     def _resolve_extent(
         self,
@@ -596,50 +599,70 @@ class ExportWidget(QWidget):
         return extent
 
     def _set_global_extent(self) -> None:
-        """Open a dialog to set a global extent filter applied to all exported layers."""
+        """Open a dialog with QgsExtentGroupBox to set a global extent filter."""
         dlg = QDialog(self)
         dlg.setWindowTitle("Set global extent filter")
+        dlg.setMinimumWidth(500)
         layout = QVBoxLayout(dlg)
 
-        crs_row = QHBoxLayout()
-        crs_row.addWidget(QLabel("Coordinate system:"))
-        crs_widget = QgsProjectionSelectionWidget()
-        if self._global_extent_crs:
-            crs = QgsCoordinateReferenceSystem(self._global_extent_crs)
-            if crs.isValid():
-                crs_widget.setCrs(crs)
-        crs_row.addWidget(crs_widget, 1)
-        layout.addLayout(crs_row)
+        extent_group = QgsExtentGroupBox(dlg)
+        extent_group.setCheckable(True)
 
-        grid = QGridLayout()
-        xmin_sb = QDoubleSpinBox()
-        ymin_sb = QDoubleSpinBox()
-        xmax_sb = QDoubleSpinBox()
-        ymax_sb = QDoubleSpinBox()
-        for sb in (xmin_sb, ymin_sb, xmax_sb, ymax_sb):
-            sb.setRange(-1e9, 1e9)
-            sb.setDecimals(6)
+        has_extent = bool(self._global_extent_coords)
+        extent_group.setChecked(has_extent)
 
-        if self._global_extent_coords:
+        proj = QgsProject.instance()
+        extent = QgsRectangle()
+        first = True
+        for layer in proj.mapLayers().values():
+            if isinstance(layer, (QgsVectorLayer, QgsRasterLayer)) and layer.isValid():
+                le = layer.extent()
+                if not le.isNull():
+                    if first:
+                        extent = QgsRectangle(le)
+                        first = False
+                    else:
+                        extent.combineExtentWith(le)
+
+        if first:
+            extent = QgsRectangle(-180, -90, 180, 90)
+        proj_crs = proj.crs()
+        ref_crs = (
+            proj_crs
+            if proj_crs.isValid()
+            else QgsCoordinateReferenceSystem("EPSG:4326")
+        )
+        extent_group.setOriginalExtent(extent, ref_crs)
+        extent_group.setCurrentExtent(extent, ref_crs)
+        extent_group.setOutputCrs(ref_crs)
+
+        if has_extent:
             parts = self._global_extent_coords.split(",")
             if len(parts) == 4:
                 try:
-                    xmin_sb.setValue(float(parts[0]))
-                    ymin_sb.setValue(float(parts[1]))
-                    xmax_sb.setValue(float(parts[2]))
-                    ymax_sb.setValue(float(parts[3]))
+                    rect = QgsRectangle(
+                        float(parts[0]),
+                        float(parts[1]),
+                        float(parts[2]),
+                        float(parts[3]),
+                    )
+                    extent_group.setOutputExtentFromUser(rect)
                 except (ValueError, TypeError):
                     pass
 
-        grid.addWidget(QLabel("X min:"), 0, 0)
-        grid.addWidget(xmin_sb, 0, 1)
-        grid.addWidget(QLabel("Y min:"), 1, 0)
-        grid.addWidget(ymin_sb, 1, 1)
-        grid.addWidget(QLabel("X max:"), 2, 0)
-        grid.addWidget(xmax_sb, 2, 1)
-        grid.addWidget(QLabel("Y max:"), 3, 0)
-        grid.addWidget(ymax_sb, 3, 1)
-        layout.addLayout(grid)
+        if self._global_extent_crs:
+            crs = QgsCoordinateReferenceSystem(self._global_extent_crs)
+            if crs.isValid():
+                extent_group.setOutputCrs(crs)
+
+        extent_group.toggled.connect(
+            lambda checked: extent_group.setTitleBase(
+                "Extent" if checked else "No global extent",
+            ),
+        )
+        extent_group.setTitleBase("Extent" if has_extent else "No global extent")
+
+        layout.addWidget(extent_group)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
@@ -649,12 +672,21 @@ class ExportWidget(QWidget):
         layout.addWidget(buttons)
 
         if dlg.exec():
-            self._global_extent_coords = (
-                f"{xmin_sb.value()},{ymin_sb.value()},"
-                f"{xmax_sb.value()},{ymax_sb.value()}"
-            )
-            crs = crs_widget.crs()
-            self._global_extent_crs = crs.authid() if crs.isValid() else ""
+            if not extent_group.isChecked():
+                self._global_extent_coords = ""
+                self._global_extent_crs = ""
+            else:
+                rect = extent_group.outputExtent()
+                if not rect.isNull():
+                    self._global_extent_coords = (
+                        f"{rect.xMinimum()},{rect.yMinimum()},"
+                        f"{rect.xMaximum()},{rect.yMaximum()}"
+                    )
+                    crs = extent_group.outputCrs()
+                    self._global_extent_crs = crs.authid() if crs.isValid() else ""
+                else:
+                    self._global_extent_coords = ""
+                    self._global_extent_crs = ""
             self._update_global_extent_buttons()
 
     def _update_global_extent_buttons(self) -> None:
@@ -1050,14 +1082,13 @@ class ExportWidget(QWidget):
         return layer, target_crs, isinstance(layer, QgsRasterLayer), None
 
     def _get_layer_drivers(self, lid: str, is_raster: bool) -> list[str]:
-        """Return drivers to use for a layer. Respects per-layer format override."""
+        """Return drivers for a layer. Per-layer override replaces global defaults."""
         override = self._single_table.get_format_override(lid)
         if override:
             return list(override)
-        fallback = list(self._raster_selected if is_raster else self._vector_selected)
-        if not fallback:
-            return ["GTiff"] if is_raster else ["GPKG"]
-        return fallback
+        return list(self._raster_selected if is_raster else self._vector_selected) or (
+            ["GTiff"] if is_raster else ["GPKG"]
+        )
 
     def _export_single(self) -> None:
         """Build and run ExportSpecs for the Single Files tab."""

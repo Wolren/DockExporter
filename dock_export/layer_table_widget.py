@@ -51,10 +51,7 @@ class _NoWheelComboBox(QComboBox):
 
 
 class _FormatOverrideDialog(QDialog):
-    """Multi-select format picker for a single layer."""
-
-    _DEFAULT_VECTORS: frozenset[str] = frozenset({"GPKG"})
-    _DEFAULT_RASTERS: frozenset[str] = frozenset({"GTiff"})
+    """Multi-select format picker for a single layer with a Default checkbox."""
 
     def __init__(
         self,
@@ -65,10 +62,15 @@ class _FormatOverrideDialog(QDialog):
         super().__init__(parent)
         layer = QgsProject.instance().mapLayer(layer_id)
         is_vector = isinstance(layer, QgsVectorLayer)
-        defaults = self._DEFAULT_VECTORS if is_vector else self._DEFAULT_RASTERS
 
         self.setWindowTitle("Layer export formats")
         layout = QVBoxLayout(self)
+
+        has_override = bool(current)
+
+        self._default_cb = QCheckBox("Default (globally set)")
+        self._default_cb.setChecked(not has_override)
+        layout.addWidget(self._default_cb)
 
         self._checks: dict[str, QCheckBox] = {}
         fmt_list = VECTOR_FORMATS if is_vector else RASTER_FORMATS
@@ -76,7 +78,7 @@ class _FormatOverrideDialog(QDialog):
         grid = QGridLayout(group)
         for idx, (label, driver) in enumerate(fmt_list):
             cb = QCheckBox(label)
-            cb.setChecked(driver in current if current else driver in defaults)
+            cb.setChecked(driver in current if has_override else False)
             self._checks[driver] = cb
             grid.addWidget(cb, idx // 3, idx % 3)
         layout.addWidget(group)
@@ -89,6 +91,8 @@ class _FormatOverrideDialog(QDialog):
         layout.addWidget(btn_box)
 
     def selected_drivers(self) -> set[str]:
+        if self._default_cb.isChecked():
+            return set()
         return {d for d, cb in self._checks.items() if cb.isChecked()}
 
 
@@ -115,6 +119,8 @@ class LayerTableWidget(QTableWidget):
         self._show_format = show_format
         self._export_names: dict[str, str] = {}
         self._format_overrides: dict[str, set[str]] = {}
+        self._global_vector_formats: set[str] = {"GPKG"}
+        self._global_raster_formats: set[str] = {"GTiff"}
         self._filters: dict[str, str] = {}
         self._target_crs: dict[str, str] = {}
         self._field_filters: dict[str, list[str]] = {}
@@ -145,7 +151,7 @@ class LayerTableWidget(QTableWidget):
 
         self._setup_header()
         self._setup_appearance()
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.itemChanged.connect(self._on_item_changed)
         self.itemSelectionChanged.connect(self._emit_selection_changed)
         self.cellClicked.connect(self._on_cell_clicked)
@@ -264,7 +270,7 @@ class LayerTableWidget(QTableWidget):
             if self._show_format:
                 drivers = self._format_overrides.get(layer.id(), set())
                 fmt_item = QTableWidgetItem(
-                    self._format_display_text(drivers),
+                    self._format_display_text(drivers, is_vector),
                 )
                 fmt_item.setFlags(
                     Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable,
@@ -298,11 +304,10 @@ class LayerTableWidget(QTableWidget):
             self.selectRow(row)
         self._emit_selection_changed()
 
-    @staticmethod
-    def _format_display_text(drivers: set[str]) -> str:
-        """Return a short label summarizing the selected format drivers."""
+    def _format_display_text(self, drivers: set[str], is_vector: bool = True) -> str:
+        """Return a short label summarizing format drivers, or 'Default' when using global defaults."""
         if not drivers:
-            return ""
+            return "Default"
         labels = {d: lbl for lbl, d in VECTOR_FORMATS}
         labels.update({d: lbl for lbl, d in RASTER_FORMATS})
         names = [labels.get(d, d) for d in sorted(drivers)]
@@ -333,8 +338,10 @@ class LayerTableWidget(QTableWidget):
         item = self.item(row, COL_FORMAT)
         if item is None:
             return
+        layer = QgsProject.instance().mapLayer(layer_id)
+        is_vector = isinstance(layer, QgsVectorLayer)
         drivers = self._format_overrides.get(layer_id, set())
-        item.setText(self._format_display_text(drivers))
+        item.setText(self._format_display_text(drivers, is_vector))
 
     def set_filter(self, layer_id: str, expression: str) -> None:
         """Set a filter expression badge for a specific layer."""
@@ -548,6 +555,17 @@ class LayerTableWidget(QTableWidget):
             layer = QgsProject.instance().mapLayer(layer_id)
             self._apply_export_name_style(item, new_name, layer.name() if layer else "")
             self.export_name_changed.emit(layer_id, new_name)
+
+    def set_global_formats(
+        self,
+        vector_formats: set[str],
+        raster_formats: set[str],
+    ) -> None:
+        """Set the global default format sets used when no per-layer override exists."""
+        self._global_vector_formats = vector_formats
+        self._global_raster_formats = raster_formats
+        for layer_id in self._row_for_layer:
+            self._update_format_display(layer_id)
 
     def _on_format_clicked(self, row: int) -> None:
         layer_id = self._layer_id_for_row(row)

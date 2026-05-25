@@ -62,7 +62,7 @@ class _CappedTableWidget(QTableWidget):
 
     def __init__(self, rows=0, cols=0, parent=None):
         super().__init__(rows, cols, parent)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     def sizeHint(self):
         hint = super().sizeHint()
