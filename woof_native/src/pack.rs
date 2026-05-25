@@ -1,5 +1,4 @@
-//! .woof archive packer. Provides v2 (legacy flat table) and v3 (seek table + xxhash integrity)
-//! encoders, plus `PyO3` bridge functions for Python callers.
+//! .woof archive packer with seek table + xxhash integrity, plus `PyO3` bridge.
 
 #![allow(
     clippy::useless_conversion,
@@ -10,89 +9,18 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
-use crate::entry::{
-    Entry, SeekEntry, FLAG_ENTRY_ZSTD, V2_HEADER_SIZE, V3_HEADER_SIZE, WOOF_MAGIC, WOOF_VERSION_V2,
-    WOOF_VERSION_V3,
-};
+use crate::entry::{Entry, SeekEntry, FLAG_ENTRY_ZSTD, HEADER_SIZE, WOOF_MAGIC, WOOF_VERSION};
 use crate::error::WoofError;
 use crate::seek_table;
 
-/// Pack entries into the legacy v2 format. Sorts entries by name, optionally zstd-compresses,
-/// and produces a flat table with inline flags/name/length/data fields.
-///
-/// # Errors
-/// Returns `PyErr` if zstd compression fails.
-pub fn pack_v2(entries: Vec<(String, Vec<u8>)>, compress: bool, level: i32) -> PyResult<Vec<u8>> {
-    let mut sorted: Vec<Entry> = entries
-        .into_iter()
-        .map(|(name, data)| Entry::new(name, data))
-        .collect();
-    sorted.sort();
-
-    let total_raw: usize = sorted.iter().map(|e| e.data.len()).sum();
-
-    let mut ftable = Vec::new();
-    for entry in &sorted {
-        let (data, flags) = if compress {
-            let mut cctx = zstd::bulk::Compressor::new(level)
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-            let compressed = cctx
-                .compress(&entry.data)
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-            if compressed.len() < entry.data.len() {
-                (compressed, FLAG_ENTRY_ZSTD)
-            } else {
-                (entry.data.clone(), 0)
-            }
-        } else {
-            (entry.data.clone(), 0)
-        };
-        ftable.extend_from_slice(&flags.to_le_bytes());
-        ftable.extend_from_slice(&(entry.name.len() as u32).to_le_bytes());
-        ftable.extend_from_slice(entry.name.as_bytes());
-        ftable.extend_from_slice(&(data.len() as u64).to_le_bytes());
-        ftable.extend_from_slice(&data);
-    }
-
-    let payload_size = ftable.len() as u64;
-    let mut header = Vec::with_capacity(V2_HEADER_SIZE);
-    header.extend_from_slice(WOOF_MAGIC);
-    header.extend_from_slice(&WOOF_VERSION_V2.to_le_bytes());
-    header.extend_from_slice(&0u64.to_le_bytes());
-    header.extend_from_slice(&payload_size.to_le_bytes());
-    header.extend_from_slice(&(total_raw as u64).to_le_bytes());
-
-    let mut output = Vec::with_capacity(V2_HEADER_SIZE + ftable.len());
-    output.extend_from_slice(&header);
-    output.extend_from_slice(&ftable);
-
-    Ok(output)
-}
-
-/// `PyO3` bridge for `pack_v2`. Accepts a Python dict mapping names to bytes.
-#[pyfunction]
-pub fn pack_v2_py<'py>(
-    py: Python<'py>,
-    dict: &Bound<'py, PyDict>,
-    compress: bool,
-    level: i32,
-) -> PyResult<Py<PyBytes>> {
-    let mut entries: Vec<(String, Vec<u8>)> = Vec::with_capacity(dict.len());
-    for (key, val) in dict.iter() {
-        entries.push((key.extract()?, val.extract()?));
-    }
-    let output = pack_v2(entries, compress, level)?;
-    Ok(PyBytes::new_bound(py, &output).into())
-}
-
-/// Pack entries into the v3 format with a seek table and per-entry xxhash3-64 checksums.
+/// Pack entries into the .woof format with a seek table and per-entry xxhash3-64 checksums.
 ///
 /// Entries are sorted by name, optionally zstd-compressed per-entry,
 /// and the seek table enables O(log n) lookup and random access.
 ///
 /// # Errors
 /// Returns `WoofError` if zstd compression fails.
-pub fn pack_v3(
+pub fn pack_archive(
     entries: Vec<(String, Vec<u8>)>,
     compress: bool,
     level: i32,
@@ -136,17 +64,16 @@ pub fn pack_v3(
     let payload_size = payload.len() as u64;
     let seek_table_bytes = seek_table::encode(&seek_entries);
 
-    let mut header = Vec::with_capacity(V3_HEADER_SIZE);
+    let mut header = Vec::with_capacity(HEADER_SIZE);
     header.extend_from_slice(WOOF_MAGIC);
-    header.extend_from_slice(&WOOF_VERSION_V3.to_le_bytes());
+    header.extend_from_slice(&WOOF_VERSION.to_le_bytes());
     header.extend_from_slice(&0u64.to_le_bytes());
-    header.extend_from_slice(&(V3_HEADER_SIZE as u64).to_le_bytes());
-    header
-        .extend_from_slice(&(V3_HEADER_SIZE as u64 + seek_table_bytes.len() as u64).to_le_bytes());
+    header.extend_from_slice(&(HEADER_SIZE as u64).to_le_bytes());
+    header.extend_from_slice(&(HEADER_SIZE as u64 + seek_table_bytes.len() as u64).to_le_bytes());
     header.extend_from_slice(&payload_size.to_le_bytes());
     header.extend_from_slice(&(total_raw as u64).to_le_bytes());
 
-    let mut output = Vec::with_capacity(V3_HEADER_SIZE + seek_table_bytes.len() + payload.len());
+    let mut output = Vec::with_capacity(HEADER_SIZE + seek_table_bytes.len() + payload.len());
     output.extend_from_slice(&header);
     output.extend_from_slice(&seek_table_bytes);
     output.extend_from_slice(&payload);
@@ -154,10 +81,10 @@ pub fn pack_v3(
     Ok(output)
 }
 
-/// `PyO3` bridge for `pack_v3`. Collects `PyBytes` references from the Python dict,
+/// `PyO3` bridge for `pack_archive`. Collects `PyBytes` references from the Python dict,
 /// sorts by name, compresses, and produces the final archive.
 #[pyfunction]
-pub fn pack_v3_py<'py>(
+pub fn pack_woof_py<'py>(
     py: Python<'py>,
     dict: &Bound<'py, PyDict>,
     compress: bool,
@@ -205,12 +132,12 @@ pub fn pack_v3_py<'py>(
     let seek_bytes = seek_table::encode(&seek_entries);
     let payload_size = payload.len() as u64;
 
-    let mut output = Vec::with_capacity(V3_HEADER_SIZE + seek_bytes.len() + payload.len());
+    let mut output = Vec::with_capacity(HEADER_SIZE + seek_bytes.len() + payload.len());
     output.extend_from_slice(WOOF_MAGIC);
-    output.extend_from_slice(&WOOF_VERSION_V3.to_le_bytes());
+    output.extend_from_slice(&WOOF_VERSION.to_le_bytes());
     output.extend_from_slice(&0u64.to_le_bytes());
-    output.extend_from_slice(&(V3_HEADER_SIZE as u64).to_le_bytes());
-    output.extend_from_slice(&(V3_HEADER_SIZE as u64 + seek_bytes.len() as u64).to_le_bytes());
+    output.extend_from_slice(&(HEADER_SIZE as u64).to_le_bytes());
+    output.extend_from_slice(&(HEADER_SIZE as u64 + seek_bytes.len() as u64).to_le_bytes());
     output.extend_from_slice(&payload_size.to_le_bytes());
     output.extend_from_slice(&(total_raw as u64).to_le_bytes());
     output.extend_from_slice(&seek_bytes);
@@ -265,30 +192,30 @@ mod benchmarks {
 
     #[test]
     #[ignore]
-    fn bench_pack_v3_no_compress() {
+    fn bench_pack_no_compress() {
         let entries = make_test_entries(184, 1_013_000_000);
         let start = std::time::Instant::now();
         for _ in 0..3 {
-            let _ = pack_v3(entries.clone(), false, 0).unwrap();
+            let _ = pack_archive(entries.clone(), false, 0).unwrap();
         }
         let avg = start.elapsed() / 3;
         println!(
-            "Rust pack_v3 no-compress (1013 MB, 184 files, 3x): {:?} avg",
+            "Rust pack_archive no-compress (1013 MB, 184 files, 3x): {:?} avg",
             avg
         );
     }
 
     #[test]
     #[ignore]
-    fn bench_pack_v3_compress() {
+    fn bench_pack_compress() {
         let entries = make_test_entries(184, 1_013_000_000);
         let start = std::time::Instant::now();
         for _ in 0..3 {
-            let _ = pack_v3(entries.clone(), true, 3).unwrap();
+            let _ = pack_archive(entries.clone(), true, 3).unwrap();
         }
         let avg = start.elapsed() / 3;
         println!(
-            "Rust pack_v3 compress (1013 MB, 184 files, 3x): {:?} avg",
+            "Rust pack_archive compress (1013 MB, 184 files, 3x): {:?} avg",
             avg
         );
     }

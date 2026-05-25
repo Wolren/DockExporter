@@ -14,13 +14,12 @@ from qgis.core import (
     QgsDataProvider,
     QgsExpression,
     QgsFeature,
-    QgsFeatureRequest,
     QgsFeatureSink,
     QgsFields,
-    QgsGeometry,
     QgsMapLayer,
     QgsProject,
     QgsRasterBlockFeedback,
+    QgsRectangle,
     QgsRasterFileWriter,
     QgsRasterLayer,
     QgsRasterPipe,
@@ -147,10 +146,41 @@ class ExportEngine:
 
         opts = QgsVectorFileWriter.SaveVectorOptions()
         opts.driverName = spec.driver
-        opts.fileEncoding = "UTF-8"
+        opts.fileEncoding = spec.encoding
         opts.layerName = spec.export_name
         opts.actionOnExistingFile = action
         opts.symbologyExport = Qgis.FeatureSymbologyExport.NoSymbology
+
+        if spec.datasource_options:
+            opts.datasourceOptions = spec.datasource_options
+        layer_opts = list(spec.layer_options) if spec.layer_options else []
+        if spec.description:
+            layer_opts.insert(0, f"DESCRIPTION={spec.description}")
+        if spec.layer_fid:
+            layer_opts.insert(0, f"FID={spec.layer_fid}")
+        if spec.geometry_name:
+            layer_opts.insert(0, f"GEOMETRY_NAME={spec.geometry_name}")
+        if spec.identifier:
+            layer_opts.insert(0, f"IDENTIFIER={spec.identifier}")
+        if spec.spatial_index:
+            layer_opts.insert(0, f"SPATIAL_INDEX={spec.spatial_index}")
+        if layer_opts:
+            opts.layerOptions = layer_opts
+
+        opts.skipAttributeCreation = spec.skip_attribute_creation
+
+        if spec.filter_extent:
+            parts = spec.filter_extent.split(",")
+            if len(parts) == 4:
+                try:
+                    opts.filterExtent = QgsRectangle(
+                        float(parts[0]),
+                        float(parts[1]),
+                        float(parts[2]),
+                        float(parts[3]),
+                    )
+                except (ValueError, TypeError):
+                    pass
 
         transform_ctx = QgsProject.instance().transformContext()
 
@@ -185,12 +215,20 @@ class ExportEngine:
             "guid_permalink",
         }
 
-        needs_no_attributes = spec.driver in no_attribute_drivers
+        needs_no_attributes = (
+            spec.driver in no_attribute_drivers or spec.skip_attribute_creation
+        )
+        has_geom_overrides = bool(
+            spec.geometry_type_override or spec.force_z or spec.force_multi,
+        )
         use_safe_clone = (
             bool(spec.filter_expression.strip())
             or target_crs != layer.crs()
             or bool(spec.field_names)
             or needs_no_attributes
+            or spec.save_selected_only
+            or has_geom_overrides
+            or bool(spec.field_export_names)
         )
 
         clone_field_names = spec.field_names
@@ -217,6 +255,14 @@ class ExportEngine:
                 spec.driver,
                 target_crs.authid(),
                 field_names=clone_field_names,
+                field_types=spec.field_types,
+                field_export_names=spec.field_export_names,
+                selected_only=spec.save_selected_only,
+                use_aliases_for_names=spec.use_aliases_for_export_name,
+                geometry_type_override=spec.geometry_type_override,
+                force_z=spec.force_z,
+                force_multi=spec.force_multi,
+                include_constraints=spec.include_constraints,
             )
             if source is None:
                 result.error = clone_error or "Could not build filtered/safe clone"
@@ -366,9 +412,34 @@ class ExportEngine:
                 and crs not in ("EPSG:4326", "EPSG:3857")
             ):
                 crs = "EPSG:4326"
-            translate_kwargs = {"format": spec.driver}
+
+            translate_kwargs: dict = {"format": spec.driver}
             if crs:
                 translate_kwargs["outputSRS"] = crs
+
+            if spec.filter_extent:
+                parts = spec.filter_extent.split(",")
+                if len(parts) == 4:
+                    try:
+                        xmin, ymin, xmax, ymax = (
+                            float(parts[0]),
+                            float(parts[1]),
+                            float(parts[2]),
+                            float(parts[3]),
+                        )
+                        translate_kwargs["projWin"] = [xmin, ymax, xmax, ymin]
+                    except (ValueError, TypeError):
+                        pass
+
+            if spec.raster_resolution_x > 0:
+                translate_kwargs["xRes"] = spec.raster_resolution_x
+            if spec.raster_resolution_y > 0:
+                translate_kwargs["yRes"] = spec.raster_resolution_y
+
+            if spec.raster_nodata:
+                translate_kwargs["srcNoData"] = spec.raster_nodata
+                translate_kwargs["dstNodata"] = spec.raster_nodata
+
             gdal.Translate(output_path, src_ds, **translate_kwargs)
             src_ds = None
 
@@ -418,12 +489,36 @@ class ExportEngine:
                 f"RASTER_TABLE={spec.export_name}",
                 "APPEND_SUBDATASET=YES",
             ]
-            translate_kwargs = {
+
+            translate_kwargs: dict = {
                 "format": "GPKG",
                 "creationOptions": creation_opts,
             }
             if spec.target_crs_authid.strip():
                 translate_kwargs["outputSRS"] = spec.target_crs_authid.strip()
+
+            if spec.filter_extent:
+                parts = spec.filter_extent.split(",")
+                if len(parts) == 4:
+                    try:
+                        xmin, ymin, xmax, ymax = (
+                            float(parts[0]),
+                            float(parts[1]),
+                            float(parts[2]),
+                            float(parts[3]),
+                        )
+                        translate_kwargs["projWin"] = [xmin, ymax, xmax, ymin]
+                    except (ValueError, TypeError):
+                        pass
+
+            if spec.raster_resolution_x > 0:
+                translate_kwargs["xRes"] = spec.raster_resolution_x
+            if spec.raster_resolution_y > 0:
+                translate_kwargs["yRes"] = spec.raster_resolution_y
+
+            if spec.raster_nodata:
+                translate_kwargs["srcNoData"] = spec.raster_nodata
+                translate_kwargs["dstNodata"] = spec.raster_nodata
 
             gdal.Translate(gpkg_path, src_ds, **translate_kwargs)
             src_ds = None
@@ -519,11 +614,37 @@ class ExportEngine:
         driver_name: str = "",
         target_crs_authid: str = "",
         field_names: list[str] | None = None,
+        field_types: dict[str, str] | None = None,
+        field_export_names: dict[str, str] | None = None,
+        selected_only: bool = False,
+        use_aliases_for_names: bool = False,
+        geometry_type_override: str = "",
+        force_z: bool = False,
+        force_multi: bool = False,
+        include_constraints: bool = False,
     ) -> tuple[QgsVectorLayer | None, int, str]:
-        """Create an in-memory vector layer clone with filter, CRS reprojection, and field subset.
+        """Create an in-memory vector layer clone with filter, CRS reprojection, field subset, type overrides, and geometry overrides."""
+        from qgis.PyQt.QtCore import QVariant
 
-        Returns (memory_layer, feature_count, error_message).
-        """
+        _GEOM_MAP = {
+            "Point": QgsWkbTypes.Type.Point,
+            "LineString": QgsWkbTypes.Type.LineString,
+            "Polygon": QgsWkbTypes.Type.Polygon,
+            "GeometryCollection": QgsWkbTypes.Type.GeometryCollection,
+            "NoGeometry": QgsWkbTypes.Type.NoGeometry,
+        }
+
+        _TYPE_MAP = {
+            "Integer": QVariant.Int,
+            "Integer64": QVariant.LongLong,
+            "Double": QVariant.Double,
+            "String": QVariant.String,
+            "Date": QVariant.Date,
+            "DateTime": QVariant.DateTime,
+            "Time": QVariant.Time,
+            "Boolean": QVariant.Bool,
+        }
+
         source_fields = layer.fields()
         kept_indexes = []
         kept_fields = QgsFields()
@@ -534,7 +655,24 @@ class ExportEngine:
             if field_names is not None and field.name() not in field_names:
                 continue
             kept_indexes.append(idx)
-            kept_fields.append(field)
+            fname = field_export_names.get(field.name()) if field_export_names else None
+            if fname is None and use_aliases_for_names:
+                fname = field.alias()
+            if not fname:
+                fname = field.name()
+            if field_types and field.name() in field_types:
+                qtype = _TYPE_MAP.get(field_types[field.name()], QVariant.String)
+                new_field = QgsField(fname, qtype)
+                if include_constraints:
+                    new_field.setConstraints(field.constraints())
+                kept_fields.append(new_field)
+            elif fname != field.name():
+                new_field = QgsField(fname, field.type())
+                if include_constraints:
+                    new_field.setConstraints(field.constraints())
+                kept_fields.append(new_field)
+            else:
+                kept_fields.append(field)
 
         target_crs = layer.crs()
         if target_crs_authid.strip():
@@ -543,7 +681,14 @@ class ExportEngine:
                 return None, 0, f"Invalid target CRS: {target_crs_authid}"
             target_crs = requested
 
-        geom_type = QgsWkbTypes.displayString(layer.wkbType())
+        wkb_type = layer.wkbType()
+        if geometry_type_override and geometry_type_override in _GEOM_MAP:
+            wkb_type = _GEOM_MAP[geometry_type_override]
+        if force_z:
+            wkb_type = QgsWkbTypes.addZ(wkb_type)
+        if force_multi:
+            wkb_type = QgsWkbTypes.addMulti(wkb_type)
+        geom_type = QgsWkbTypes.displayString(wkb_type)
         uri = f"{geom_type}?crs={target_crs.authid()}"
         mem = QgsVectorLayer(uri, "filtered_clone", "memory")
         if not mem.isValid():
@@ -553,7 +698,15 @@ class ExportEngine:
         dp.addAttributes(list(kept_fields))
         mem.updateFields()
 
-        if expression.strip():
+        if selected_only:
+            features = layer.selectedFeatures()
+            if expression.strip():
+                expr = QgsExpression(expression)
+                if expr.hasParserError():
+                    return None, 0, expr.parserErrorString()
+                features = [f for f in features if expr.evaluate(f)]
+            iterator = iter(features)
+        elif expression.strip():
             expr = QgsExpression(expression)
             if expr.hasParserError():
                 return None, 0, expr.parserErrorString()
@@ -580,6 +733,12 @@ class ExportEngine:
                 and geom.transform(transform) != 0
             ):
                 return None, 0, "Geometry transformation failed"
+            if force_z and geom is not None and not geom.isNull():
+                try:
+                    if not geom.constGet().is3D():
+                        geom.get().addZValue(0)
+                except (AttributeError, TypeError):
+                    pass
             feat.setGeometry(geom)
             feat.setAttributes([src_feat[i] for i in kept_indexes])
             feat.setId(-1)

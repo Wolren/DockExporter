@@ -1,4 +1,4 @@
-//! Seek-table encode/decode for the v3 .woof format. Maps entry names to their offset, size,
+//! Seek-table encode/decode for the .woof format. Maps entry names to their offset, size,
 //! compression flags, and xxhash3-64 checksum within the payload section.
 
 use crate::entry::SeekEntry;

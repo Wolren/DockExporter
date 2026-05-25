@@ -5,20 +5,14 @@ use std::cmp::Ordering;
 /// Magic bytes identifying a .woof archive.
 pub const WOOF_MAGIC: &[u8; 4] = b"WOOF";
 
-/// Legacy v2 format version identifier.
-pub const WOOF_VERSION_V2: u32 = 2;
-
-/// Current v3 format version identifier (seek table + xxhash integrity).
-pub const WOOF_VERSION_V3: u32 = 3;
+/// Current archive format version identifier.
+pub const WOOF_VERSION: u32 = 3;
 
 /// Bit flag indicating this entry is zstd-compressed.
 pub const FLAG_ENTRY_ZSTD: u32 = 2;
 
-/// Byte size of the v2 fixed header.
-pub const V2_HEADER_SIZE: usize = 32;
-
-/// Byte size of the v3 fixed header (48 bytes).
-pub const V3_HEADER_SIZE: usize = 48;
+/// Byte size of the fixed header (48 bytes).
+pub const HEADER_SIZE: usize = 48;
 
 /// A named entry with raw (pre-compression) data.
 #[derive(Clone)]
@@ -54,7 +48,7 @@ impl PartialEq for Entry {
     }
 }
 
-/// Metadata entry in the v3 seek table.
+/// Metadata entry in the seek table.
 #[derive(Clone, Debug)]
 pub struct SeekEntry {
     pub flags: u32,

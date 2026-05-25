@@ -10,17 +10,22 @@ from datetime import datetime
 
 from qgis.core import (
     QgsCoordinateReferenceSystem,
+    QgsCoordinateTransform,
     QgsProject,
+    QgsRectangle,
     QgsRasterLayer,
     QgsSettings,
     QgsVectorLayer,
 )
+from qgis.gui import QgsProjectionSelectionWidget
 from qgis.PyQt.QtCore import QThread
+from qgis.PyQt.QtGui import QTextCursor
 from qgis.PyQt.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFileDialog,
     QGridLayout,
     QGroupBox,
@@ -28,11 +33,11 @@ from qgis.PyQt.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
-    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QSizePolicy,
     QTabWidget,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -113,6 +118,8 @@ class ExportWidget(QWidget):
         self._log_entries: list[str] = []
         self._vector_selected: set[str] = {"GPKG"}
         self._raster_selected: set[str] = {"GTiff"}
+        self._global_extent_coords: str = ""
+        self._global_extent_crs: str = ""
 
         self._build_ui()
         self._load_settings()
@@ -197,10 +204,13 @@ class ExportWidget(QWidget):
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self._log_view = QPlainTextEdit()
+        self._log_view = QTextBrowser()
         self._log_view.setReadOnly(True)
-        self._log_view.setMaximumBlockCount(500)
-        self._log_view.setStyleSheet("font-size:8pt; font-family:monospace;")
+        self._log_view.setOpenExternalLinks(False)
+        self._log_view.document().setMaximumBlockCount(500)
+        self._log_view.setStyleSheet(
+            "font-size:8pt; font-family:monospace;",
+        )
         layout.addWidget(self._log_view)
 
         log_btn_row = QHBoxLayout()
@@ -216,6 +226,7 @@ class ExportWidget(QWidget):
         """Clear the history log view and the internal entry list."""
         self._log_view.clear()
         self._log_entries.clear()
+        self._log_view.document().clear()
 
     def _build_single_tab(self) -> QWidget:
         """Build the Single Files tab with layer table, select buttons, output config, and format options."""
@@ -252,6 +263,10 @@ class ExportWidget(QWidget):
         self._fmt_btn.clicked.connect(self._configure_formats)
         self._fmt_row.addWidget(self._fmt_btn)
         self._fmt_row.addStretch()
+        self._extent_btn = QPushButton()
+        self._extent_btn.setMaximumWidth(200)
+        self._extent_btn.clicked.connect(self._set_global_extent)
+        self._fmt_row.addWidget(self._extent_btn)
         layout.addLayout(self._fmt_row)
 
         out_group = QGroupBox("Output")
@@ -349,6 +364,13 @@ class ExportWidget(QWidget):
         refresh_btn.clicked.connect(self._refresh_layers)
         sel_row.addWidget(refresh_btn, 1)
         layout.addLayout(sel_row)
+
+        extent_row = QHBoxLayout()
+        self._gpkg_extent_btn = QPushButton()
+        self._gpkg_extent_btn.setMaximumWidth(200)
+        self._gpkg_extent_btn.clicked.connect(self._set_global_extent)
+        extent_row.addWidget(self._gpkg_extent_btn)
+        layout.addLayout(extent_row)
 
         out_group = QGroupBox("Output GeoPackage")
         out_layout = QVBoxLayout(out_group)
@@ -539,6 +561,116 @@ class ExportWidget(QWidget):
             self._update_format_button_text()
             self._update_export_button_state()
 
+    def _resolve_extent(
+        self,
+        layer,
+        per_layer_extent: str,
+    ) -> str:
+        """Return the effective extent for a layer: per-layer if set, else global, with CRS transform."""
+        extent = per_layer_extent or self._global_extent_coords
+        if extent and self._global_extent_crs and layer.crs().isValid():
+            global_crs = QgsCoordinateReferenceSystem(self._global_extent_crs)
+            layer_crs = layer.crs()
+            if global_crs.isValid() and global_crs != layer_crs:
+                parts = extent.split(",")
+                if len(parts) == 4:
+                    try:
+                        rect = QgsRectangle(
+                            float(parts[0]),
+                            float(parts[1]),
+                            float(parts[2]),
+                            float(parts[3]),
+                        )
+                        xform = QgsCoordinateTransform(
+                            global_crs,
+                            layer_crs,
+                            QgsProject.instance().transformContext(),
+                        )
+                        rect = xform.transformBoundingBox(rect)
+                        return (
+                            f"{rect.xMinimum()},{rect.yMinimum()},"
+                            f"{rect.xMaximum()},{rect.yMaximum()}"
+                        )
+                    except (ValueError, TypeError):
+                        pass
+        return extent
+
+    def _set_global_extent(self) -> None:
+        """Open a dialog to set a global extent filter applied to all exported layers."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Set global extent filter")
+        layout = QVBoxLayout(dlg)
+
+        crs_row = QHBoxLayout()
+        crs_row.addWidget(QLabel("Coordinate system:"))
+        crs_widget = QgsProjectionSelectionWidget()
+        if self._global_extent_crs:
+            crs = QgsCoordinateReferenceSystem(self._global_extent_crs)
+            if crs.isValid():
+                crs_widget.setCrs(crs)
+        crs_row.addWidget(crs_widget, 1)
+        layout.addLayout(crs_row)
+
+        grid = QGridLayout()
+        xmin_sb = QDoubleSpinBox()
+        ymin_sb = QDoubleSpinBox()
+        xmax_sb = QDoubleSpinBox()
+        ymax_sb = QDoubleSpinBox()
+        for sb in (xmin_sb, ymin_sb, xmax_sb, ymax_sb):
+            sb.setRange(-1e9, 1e9)
+            sb.setDecimals(6)
+
+        if self._global_extent_coords:
+            parts = self._global_extent_coords.split(",")
+            if len(parts) == 4:
+                try:
+                    xmin_sb.setValue(float(parts[0]))
+                    ymin_sb.setValue(float(parts[1]))
+                    xmax_sb.setValue(float(parts[2]))
+                    ymax_sb.setValue(float(parts[3]))
+                except (ValueError, TypeError):
+                    pass
+
+        grid.addWidget(QLabel("X min:"), 0, 0)
+        grid.addWidget(xmin_sb, 0, 1)
+        grid.addWidget(QLabel("Y min:"), 1, 0)
+        grid.addWidget(ymin_sb, 1, 1)
+        grid.addWidget(QLabel("X max:"), 2, 0)
+        grid.addWidget(xmax_sb, 2, 1)
+        grid.addWidget(QLabel("Y max:"), 3, 0)
+        grid.addWidget(ymax_sb, 3, 1)
+        layout.addLayout(grid)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+        )
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+
+        if dlg.exec():
+            self._global_extent_coords = (
+                f"{xmin_sb.value()},{ymin_sb.value()},"
+                f"{xmax_sb.value()},{ymax_sb.value()}"
+            )
+            crs = crs_widget.crs()
+            self._global_extent_crs = crs.authid() if crs.isValid() else ""
+            self._update_global_extent_buttons()
+
+    def _update_global_extent_buttons(self) -> None:
+        """Update button text for both tabs to show current global extent state."""
+        if self._global_extent_coords:
+            crs_part = (
+                f" ({self._global_extent_crs})" if self._global_extent_crs else ""
+            )
+            text = f"Extent: {self._global_extent_coords}{crs_part}"
+        else:
+            text = "Set global extent..."
+        if hasattr(self, "_extent_btn"):
+            self._extent_btn.setText(text)
+        if hasattr(self, "_gpkg_extent_btn"):
+            self._gpkg_extent_btn.setText(text)
+
     def _update_export_button_state(self) -> None:
         """Enable/disable the Export button based on current selections and inputs."""
         self._update_layer_count()
@@ -633,7 +765,7 @@ class ExportWidget(QWidget):
 
         log_text = s.value("log_text", "", str)
         if log_text:
-            self._log_view.setPlainText(log_text)
+            self._append_log_html(log_text)
             self._log_entries = log_text.strip().split("\n")
 
         filters_json = s.value("filters", "{}", str)
@@ -646,6 +778,10 @@ class ExportWidget(QWidget):
         export_names = json.loads(names_json)
         self._single_table._export_names.update(export_names)
         self._gpkg_table._export_names.update(export_names)
+
+        self._global_extent_coords = s.value("global_extent_coords", "", str)
+        self._global_extent_crs = s.value("global_extent_crs", "", str)
+        self._update_global_extent_buttons()
 
         s.endGroup()
 
@@ -677,6 +813,8 @@ class ExportWidget(QWidget):
         s.setValue("filters", json.dumps(self._filters))
         s.setValue("target_crs", json.dumps(self._target_crs))
         s.setValue("export_names", json.dumps(self._single_table._export_names))
+        s.setValue("global_extent_coords", self._global_extent_coords)
+        s.setValue("global_extent_crs", self._global_extent_crs)
 
         s.endGroup()
         s.sync()
@@ -702,9 +840,7 @@ class ExportWidget(QWidget):
                 lid = table._layer_id_for_row(row)
                 if lid:
                     table._format_overrides.pop(lid, None)
-                    combo = table.cellWidget(row, 3)
-                    if combo:
-                        combo.setCurrentIndex(0)
+                    table._update_format_display(lid)
         self._single_dir_edit.clear()
         self._naming_template_edit.clear()
         self._gpkg_path_edit.clear()
@@ -721,6 +857,9 @@ class ExportWidget(QWidget):
         self._gpkg_keep_name_cb.setChecked(False)
         self._vector_selected = {"GPKG"}
         self._raster_selected = {"GTiff"}
+        self._global_extent_coords = ""
+        self._global_extent_crs = ""
+        self._update_global_extent_buttons()
         self._update_format_button_text()
         self._clear_log()
         self._log_view.setPlainText("")
@@ -914,7 +1053,7 @@ class ExportWidget(QWidget):
         """Return drivers to use for a layer. Respects per-layer format override."""
         override = self._single_table.get_format_override(lid)
         if override:
-            return [override]
+            return list(override)
         fallback = list(self._raster_selected if is_raster else self._vector_selected)
         if not fallback:
             return ["GTiff"] if is_raster else ["GPKG"]
@@ -985,6 +1124,51 @@ class ExportWidget(QWidget):
                         replace_in_project=replace,
                         target_crs_authid=target_crs,
                         field_names=self._single_table.get_field_filter(lid),
+                        field_types=self._single_table.get_field_type_overrides(lid),
+                        field_export_names=self._single_table.get_field_export_names(
+                            lid
+                        ),
+                        encoding=self._single_table.get_encoding(lid),
+                        save_selected_only=self._single_table.get_save_selected_only(
+                            lid
+                        ),
+                        use_aliases_for_export_name=self._single_table.get_use_aliases(
+                            lid
+                        ),
+                        persist_layer_metadata=self._single_table.get_persist_metadata(
+                            lid
+                        ),
+                        geometry_type_override=self._single_table.get_geometry_type_override(
+                            lid
+                        ),
+                        force_z=self._single_table.get_force_z(lid),
+                        force_multi=self._single_table.get_force_multi(lid),
+                        filter_extent=self._resolve_extent(
+                            layer,
+                            self._single_table.get_filter_extent(lid),
+                        ),
+                        datasource_options=self._single_table.get_datasource_options(
+                            lid
+                        ),
+                        layer_options=self._single_table.get_layer_options(lid),
+                        raster_resolution_x=self._single_table.get_raster_resolution_x(
+                            lid
+                        ),
+                        raster_resolution_y=self._single_table.get_raster_resolution_y(
+                            lid
+                        ),
+                        raster_nodata=self._single_table.get_raster_nodata(lid),
+                        skip_attribute_creation=self._single_table.get_skip_attribute_creation(
+                            lid
+                        ),
+                        include_constraints=self._single_table.get_include_constraints(
+                            lid
+                        ),
+                        description=self._single_table.get_description(lid),
+                        layer_fid=self._single_table.get_layer_fid(lid),
+                        geometry_name=self._single_table.get_geometry_name(lid),
+                        identifier=self._single_table.get_identifier(lid),
+                        spatial_index=self._single_table.get_spatial_index(lid),
                     ),
                 )
 
@@ -1069,6 +1253,35 @@ class ExportWidget(QWidget):
                     replace_in_project=replace,
                     target_crs_authid=target_crs,
                     field_names=self._gpkg_table.get_field_filter(lid),
+                    field_types=self._gpkg_table.get_field_type_overrides(lid),
+                    field_export_names=self._gpkg_table.get_field_export_names(lid),
+                    encoding=self._gpkg_table.get_encoding(lid),
+                    save_selected_only=self._gpkg_table.get_save_selected_only(lid),
+                    use_aliases_for_export_name=self._gpkg_table.get_use_aliases(lid),
+                    persist_layer_metadata=self._gpkg_table.get_persist_metadata(lid),
+                    geometry_type_override=self._gpkg_table.get_geometry_type_override(
+                        lid
+                    ),
+                    force_z=self._gpkg_table.get_force_z(lid),
+                    force_multi=self._gpkg_table.get_force_multi(lid),
+                    filter_extent=self._resolve_extent(
+                        layer,
+                        self._gpkg_table.get_filter_extent(lid),
+                    ),
+                    datasource_options=self._gpkg_table.get_datasource_options(lid),
+                    layer_options=self._gpkg_table.get_layer_options(lid),
+                    raster_resolution_x=self._gpkg_table.get_raster_resolution_x(lid),
+                    raster_resolution_y=self._gpkg_table.get_raster_resolution_y(lid),
+                    raster_nodata=self._gpkg_table.get_raster_nodata(lid),
+                    skip_attribute_creation=self._gpkg_table.get_skip_attribute_creation(
+                        lid
+                    ),
+                    include_constraints=self._gpkg_table.get_include_constraints(lid),
+                    description=self._gpkg_table.get_description(lid),
+                    layer_fid=self._gpkg_table.get_layer_fid(lid),
+                    geometry_name=self._gpkg_table.get_geometry_name(lid),
+                    identifier=self._gpkg_table.get_identifier(lid),
+                    spatial_index=self._gpkg_table.get_spatial_index(lid),
                 ),
             )
 
@@ -1143,6 +1356,38 @@ class ExportWidget(QWidget):
         self._progress.setValue(pct)
         self._status.setText(msg)
 
+    def _append_log_html(self, text: str) -> None:
+        """Append colored HTML to the log. Recognizes OK/FAIL/session patterns."""
+        html_parts = []
+        for line in text.strip().split("\n"):
+            if line.startswith("  OK  "):
+                html_parts.append(
+                    f'<span style="color:#27ae60;">{self._escape_html(line)}</span>',
+                )
+            elif line.startswith("  FAIL "):
+                html_parts.append(
+                    f'<span style="color:#c0392b;">{self._escape_html(line)}</span>',
+                )
+            elif "Export session:" in line or "Export cancelled" in line:
+                html_parts.append(
+                    f'<b style="color:#2980b9;">{self._escape_html(line)}</b>',
+                )
+            else:
+                html_parts.append(self._escape_html(line))
+
+        cursor = self._log_view.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        for i, part in enumerate(html_parts):
+            if i > 0:
+                cursor.insertHtml("<br>")
+            cursor.insertHtml(part)
+        self._log_view.setTextCursor(cursor)
+        self._log_view.ensureCursorVisible()
+
+    @staticmethod
+    def _escape_html(text: str) -> str:
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
     def _on_worker_finished(self, results: list[ExportResult]) -> None:
         """Process export results: log, notify user, optionally load layers, save settings."""
         elapsed = time.time() - self._start_time
@@ -1176,7 +1421,7 @@ class ExportWidget(QWidget):
                 log_lines.append(f"  FAIL {r.spec.export_name}: {r.error}")
 
         self._log_entries.extend(log_lines)
-        self._log_view.appendPlainText("\n".join(log_lines))
+        self._append_log_html("\n".join(log_lines))
 
         if fail or was_cancelled:
             self._tabs.setCurrentIndex(3)

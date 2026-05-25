@@ -1,38 +1,37 @@
-/// Integration tests for .woof v2 and v3 format roundtrips, integrity checks, and
-/// cross-version rejection.
+/// Integration tests for .woof format roundtrips, integrity checks, and error handling.
 use std::collections::HashMap;
 
-/// v2 roundtrip without compression preserves data.
+/// Roundtrip without compression preserves data.
 #[test]
-fn test_v2_roundtrip_no_compress() {
+fn test_roundtrip_no_compress() {
     let entries = vec![
         ("a.txt".into(), b"hello".to_vec()),
         ("b.txt".into(), b"world".to_vec()),
     ];
 
-    let result = _native_impl::pack::pack_v2(entries, false, 3).unwrap();
-    let unpacked = _native_impl::unpack::unpack_v2(&result).unwrap();
+    let result = _native_impl::pack::pack_archive(entries, false, 3).unwrap();
+    let unpacked = _native_impl::unpack::unpack_archive(&result).unwrap();
 
     let map: HashMap<String, Vec<u8>> = unpacked.into_iter().collect();
     assert_eq!(map.get("a.txt").map(|v| v.as_slice()), Some(&b"hello"[..]));
     assert_eq!(map.get("b.txt").map(|v| v.as_slice()), Some(&b"world"[..]));
 }
 
-/// v2 roundtrip with compression preserves data.
+/// Roundtrip with compression preserves data.
 #[test]
-fn test_v2_roundtrip_compress() {
+fn test_roundtrip_compress() {
     let data = "A".repeat(1000);
     let entries = vec![("compressible.txt".into(), data.as_bytes().to_vec())];
 
-    let result = _native_impl::pack::pack_v2(entries, true, 3).unwrap();
-    let unpacked = _native_impl::unpack::unpack_v2(&result).unwrap();
+    let result = _native_impl::pack::pack_archive(entries, true, 3).unwrap();
+    let unpacked = _native_impl::unpack::unpack_archive(&result).unwrap();
 
     assert_eq!(unpacked[0].1, data.as_bytes());
 }
 
-/// v2 output is deterministic regardless of input order.
+/// Output is deterministic regardless of input order.
 #[test]
-fn test_v2_deterministic() {
+fn test_deterministic() {
     let entries1 = vec![
         ("z.txt".into(), b"last".to_vec()),
         ("a.txt".into(), b"first".to_vec()),
@@ -42,81 +41,28 @@ fn test_v2_deterministic() {
         ("z.txt".into(), b"last".to_vec()),
     ];
 
-    let r1 = _native_impl::pack::pack_v2(entries1, false, 3).unwrap();
-    let r2 = _native_impl::pack::pack_v2(entries2, false, 3).unwrap();
+    let r1 = _native_impl::pack::pack_archive(entries1, false, 3).unwrap();
+    let r2 = _native_impl::pack::pack_archive(entries2, false, 3).unwrap();
     assert_eq!(
         r1, r2,
         "output should be deterministic regardless of input order"
     );
 }
 
-/// v2 rejects invalid magic bytes.
+/// Rejects invalid magic bytes.
 #[test]
-fn test_v2_invalid_magic() {
+fn test_invalid_magic() {
     let data = b"NOTWOOF".to_vec();
-    let result = _native_impl::unpack::unpack_v2(&data);
+    let result = _native_impl::unpack::unpack_archive(&data);
     assert!(result.is_err());
 }
 
-/// v3 roundtrip without compression preserves data.
+/// Roundtrip with compression preserves highly compressible data.
 #[test]
-fn test_v3_roundtrip_no_compress() {
-    let entries = vec![
-        ("a.txt".into(), b"hello".to_vec()),
-        ("b.txt".into(), b"world".to_vec()),
-    ];
-
-    let result = _native_impl::pack::pack_v3(entries, false, 3).unwrap();
-    let unpacked = _native_impl::unpack::unpack_v3(&result).unwrap();
-
-    let map: HashMap<String, Vec<u8>> = unpacked.into_iter().collect();
-    assert_eq!(map.get("a.txt").map(|v| v.as_slice()), Some(&b"hello"[..]));
-    assert_eq!(map.get("b.txt").map(|v| v.as_slice()), Some(&b"world"[..]));
-}
-
-/// v3 roundtrip with compression preserves data.
-#[test]
-fn test_v3_roundtrip_compress() {
-    let data = "A".repeat(1000);
-    let entries = vec![("compressible.txt".into(), data.as_bytes().to_vec())];
-
-    let result = _native_impl::pack::pack_v3(entries, true, 3).unwrap();
-    let unpacked = _native_impl::unpack::unpack_v3(&result).unwrap();
-
-    assert_eq!(unpacked[0].1, data.as_bytes());
-}
-
-/// v3 output is deterministic regardless of input order.
-#[test]
-fn test_v3_deterministic() {
-    let entries1 = vec![
-        ("z.txt".into(), b"last".to_vec()),
-        ("a.txt".into(), b"first".to_vec()),
-    ];
-    let entries2 = vec![
-        ("a.txt".into(), b"first".to_vec()),
-        ("z.txt".into(), b"last".to_vec()),
-    ];
-
-    let r1 = _native_impl::pack::pack_v3(entries1, false, 3).unwrap();
-    let r2 = _native_impl::pack::pack_v3(entries2, false, 3).unwrap();
-    assert_eq!(r1, r2, "v3 output should be deterministic");
-}
-
-/// v3 rejects invalid magic bytes.
-#[test]
-fn test_v3_invalid_magic() {
-    let data = b"NOTWOOF".to_vec();
-    let result = _native_impl::unpack::unpack_v3(&data);
-    assert!(result.is_err());
-}
-
-/// Highly compressible data is always compressed in v3.
-#[test]
-fn test_v3_always_compress() {
+fn test_always_compress() {
     let entries = vec![("raster.tif".into(), vec![0u8; 500])];
-    let result = _native_impl::pack::pack_v3(entries.clone(), true, 3).unwrap();
-    let unpacked = _native_impl::unpack::unpack_v3(&result).unwrap();
+    let result = _native_impl::pack::pack_archive(entries.clone(), true, 3).unwrap();
+    let unpacked = _native_impl::unpack::unpack_archive(&result).unwrap();
     assert_eq!(
         unpacked[0].1,
         vec![0u8; 500],
@@ -126,14 +72,14 @@ fn test_v3_always_compress() {
 
 /// Tampering with the payload after packing is detected by per-entry xxhash checksums.
 #[test]
-fn test_v3_integrity_check() {
+fn test_integrity_check() {
     let entries = vec![("a.txt".into(), b"hello".to_vec())];
 
-    let mut result = _native_impl::pack::pack_v3(entries, false, 3).unwrap();
+    let mut result = _native_impl::pack::pack_archive(entries, false, 3).unwrap();
     let payload_offset = u64::from_le_bytes(result[24..32].try_into().unwrap()) as usize;
     result[payload_offset] ^= 0xFF;
 
-    let unpack_result = _native_impl::unpack::unpack_v3(&result);
+    let unpack_result = _native_impl::unpack::unpack_archive(&result);
     assert!(unpack_result.is_err(), "should detect tampered data");
     assert!(
         unpack_result
@@ -146,13 +92,13 @@ fn test_v3_integrity_check() {
 
 /// Single-entry extraction by name works correctly.
 #[test]
-fn test_v3_unpack_one() {
+fn test_unpack_one() {
     let entries = vec![
         ("z.txt".into(), b"last".to_vec()),
         ("a.txt".into(), b"first".to_vec()),
     ];
 
-    let result = _native_impl::pack::pack_v3(entries, false, 3).unwrap();
+    let result = _native_impl::pack::pack_archive(entries, false, 3).unwrap();
 
     let a = _native_impl::unpack::unpack_one(&result, "a.txt").unwrap();
     assert_eq!(a, b"first");
@@ -163,35 +109,17 @@ fn test_v3_unpack_one() {
 
 /// Requesting a non-existent entry returns an error.
 #[test]
-fn test_v3_unpack_one_not_found() {
+fn test_unpack_one_not_found() {
     let entries = vec![("a.txt".into(), b"data".to_vec())];
-    let result = _native_impl::pack::pack_v3(entries, false, 3).unwrap();
+    let result = _native_impl::pack::pack_archive(entries, false, 3).unwrap();
 
     let err = _native_impl::unpack::unpack_one(&result, "nonexistent.txt");
     assert!(err.is_err());
 }
 
-/// v3 unpacker rejects v2 archives and vice versa.
-#[test]
-fn test_v3_v2_incompatible() {
-    let entries = vec![("a.txt".into(), b"data".to_vec())];
-
-    let v2_data = _native_impl::pack::pack_v2(entries.clone(), false, 3).unwrap();
-    let v3_data = _native_impl::pack::pack_v3(entries, false, 3).unwrap();
-
-    assert!(
-        _native_impl::unpack::unpack_v3(&v2_data).is_err(),
-        "v3 reader should reject v2 data"
-    );
-    assert!(
-        _native_impl::unpack::unpack_v2(&v3_data).is_err(),
-        "v2 reader should reject v3 data"
-    );
-}
-
-/// Parse a v3 archive into its header, seek entries, and payload sections.
+/// Parse an archive into its header, seek entries, and payload sections.
 #[allow(dead_code)]
-fn parse_v3(data: &[u8]) -> (&[u8], Vec<_native_impl::entry::SeekEntry>, &[u8]) {
+fn parse_archive(data: &[u8]) -> (&[u8], Vec<_native_impl::entry::SeekEntry>, &[u8]) {
     use _native_impl::entry::*;
     let seek_offset = u64::from_le_bytes(data[16..24].try_into().unwrap()) as usize;
     let payload_offset = u64::from_le_bytes(data[24..32].try_into().unwrap()) as usize;
@@ -199,5 +127,5 @@ fn parse_v3(data: &[u8]) -> (&[u8], Vec<_native_impl::entry::SeekEntry>, &[u8]) 
 
     let (entries, _) = _native_impl::seek_table::decode(data, seek_offset).unwrap();
     let payload = &data[payload_offset..payload_offset + payload_size];
-    (&data[..V3_HEADER_SIZE], entries, payload)
+    (&data[..HEADER_SIZE], entries, payload)
 }

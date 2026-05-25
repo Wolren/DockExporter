@@ -14,12 +14,18 @@ from qgis.PyQt.QtCore import Qt, pyqtSignal
 from qgis.PyQt.QtGui import QBrush, QColor, QIcon, QPalette
 from qgis.PyQt.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QGridLayout,
+    QGroupBox,
     QHeaderView,
     QSizePolicy,
     QStyle,
     QTableWidget,
     QTableWidgetItem,
+    QVBoxLayout,
 )
 
 from ._formats import get_raster_formats, get_vector_formats
@@ -34,9 +40,56 @@ COL_FILTER = 4
 COL_CRS = 5
 N_COLS = 6
 
-VECTOR_FORMATS = get_vector_formats(include_default=True)
-RASTER_FORMATS = get_raster_formats(include_default=True)
+VECTOR_FORMATS = get_vector_formats(include_default=False)
+RASTER_FORMATS = get_raster_formats(include_default=False)
 FORMAT_DEFAULT_KEY = ""
+
+
+class _NoWheelComboBox(QComboBox):
+    def wheelEvent(self, e):
+        e.ignore()
+
+
+class _FormatOverrideDialog(QDialog):
+    """Multi-select format picker for a single layer."""
+
+    _DEFAULT_VECTORS: frozenset[str] = frozenset({"GPKG"})
+    _DEFAULT_RASTERS: frozenset[str] = frozenset({"GTiff"})
+
+    def __init__(
+        self,
+        layer_id: str,
+        current: set[str],
+        parent=None,
+    ):
+        super().__init__(parent)
+        layer = QgsProject.instance().mapLayer(layer_id)
+        is_vector = isinstance(layer, QgsVectorLayer)
+        defaults = self._DEFAULT_VECTORS if is_vector else self._DEFAULT_RASTERS
+
+        self.setWindowTitle("Layer export formats")
+        layout = QVBoxLayout(self)
+
+        self._checks: dict[str, QCheckBox] = {}
+        fmt_list = VECTOR_FORMATS if is_vector else RASTER_FORMATS
+        group = QGroupBox()
+        grid = QGridLayout(group)
+        for idx, (label, driver) in enumerate(fmt_list):
+            cb = QCheckBox(label)
+            cb.setChecked(driver in current if current else driver in defaults)
+            self._checks[driver] = cb
+            grid.addWidget(cb, idx // 3, idx % 3)
+        layout.addWidget(group)
+
+        btn_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+        )
+        btn_box.accepted.connect(self.accept)
+        btn_box.rejected.connect(self.reject)
+        layout.addWidget(btn_box)
+
+    def selected_drivers(self) -> set[str]:
+        return {d for d, cb in self._checks.items() if cb.isChecked()}
 
 
 class LayerTableWidget(QTableWidget):
@@ -61,10 +114,32 @@ class LayerTableWidget(QTableWidget):
         super().__init__(0, N_COLS, parent)
         self._show_format = show_format
         self._export_names: dict[str, str] = {}
-        self._format_overrides: dict[str, str] = {}
+        self._format_overrides: dict[str, set[str]] = {}
         self._filters: dict[str, str] = {}
         self._target_crs: dict[str, str] = {}
         self._field_filters: dict[str, list[str]] = {}
+        self._field_type_overrides: dict[str, dict[str, str]] = {}
+        self._encodings: dict[str, str] = {}
+        self._save_selected_only: dict[str, bool] = {}
+        self._use_aliases: dict[str, bool] = {}
+        self._persist_metadata: dict[str, bool] = {}
+        self._geometry_type_override: dict[str, str] = {}
+        self._force_z: dict[str, bool] = {}
+        self._force_multi: dict[str, bool] = {}
+        self._filter_extents: dict[str, str] = {}
+        self._datasource_options: dict[str, list[str]] = {}
+        self._layer_options: dict[str, list[str]] = {}
+        self._raster_resolution_x: dict[str, float] = {}
+        self._raster_resolution_y: dict[str, float] = {}
+        self._raster_nodata: dict[str, str] = {}
+        self._skip_attr_creation: dict[str, bool] = {}
+        self._include_constraints: dict[str, bool] = {}
+        self._layer_description: dict[str, str] = {}
+        self._layer_fid: dict[str, str] = {}
+        self._layer_geom_name: dict[str, str] = {}
+        self._layer_identifier: dict[str, str] = {}
+        self._layer_spatial_index: dict[str, str] = {}
+        self._field_export_names: dict[str, dict[str, str]] = {}
         self._export_warnings: dict[str, str] = {}
         self._row_for_layer: dict[str, int] = {}
 
@@ -187,23 +262,15 @@ class LayerTableWidget(QTableWidget):
             self.setItem(row, COL_EXPORT, exp_item)
 
             if self._show_format:
-                formats = VECTOR_FORMATS if is_vector else RASTER_FORMATS
-                combo = QComboBox()
-                for label, _driver in formats:
-                    combo.addItem(label)
-                current_driver = self._format_overrides.get(layer.id(), "")
-                for idx, (_label, driver) in enumerate(formats):
-                    if driver == current_driver:
-                        combo.setCurrentIndex(idx)
-                        break
-                lid = layer.id()
-                combo.currentIndexChanged.connect(
-                    lambda _idx, lid=lid, f=formats: self._on_format_changed(
-                        lid,
-                        f,
-                    ),
+                drivers = self._format_overrides.get(layer.id(), set())
+                fmt_item = QTableWidgetItem(
+                    self._format_display_text(drivers),
                 )
-                self.setCellWidget(row, COL_FORMAT, combo)
+                fmt_item.setFlags(
+                    Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable,
+                )
+                fmt_item.setData(Qt.ItemDataRole.UserRole, layer.id())
+                self.setItem(row, COL_FORMAT, fmt_item)
 
             filt = self._filters.get(layer.id(), "")
             filt_item = QTableWidgetItem("\u26a1" if filt else "")
@@ -231,43 +298,43 @@ class LayerTableWidget(QTableWidget):
             self.selectRow(row)
         self._emit_selection_changed()
 
-    def _on_format_changed(self, layer_id: str, formats: list[tuple[str, str]]) -> None:
+    @staticmethod
+    def _format_display_text(drivers: set[str]) -> str:
+        """Return a short label summarizing the selected format drivers."""
+        if not drivers:
+            return ""
+        labels = {d: lbl for lbl, d in VECTOR_FORMATS}
+        labels.update({d: lbl for lbl, d in RASTER_FORMATS})
+        names = [labels.get(d, d) for d in sorted(drivers)]
+        return ", ".join(names)
+
+    def set_format_override(self, layer_id: str, drivers: set[str]) -> None:
+        """Set the format override for a layer. Empty set means default (global)."""
+        old = self._format_overrides.get(layer_id)
+        if drivers:
+            self._format_overrides[layer_id] = drivers
+        elif layer_id in self._format_overrides:
+            del self._format_overrides[layer_id]
+        if old != self._format_overrides.get(layer_id):
+            self.format_changed.emit(
+                layer_id,
+                ",".join(sorted(drivers)),
+            )
+
+    def get_format_override(self, layer_id: str) -> set[str]:
+        """Return the format override drivers for a layer, or empty set for default."""
+        return self._format_overrides.get(layer_id, set())
+
+    def _update_format_display(self, layer_id: str) -> None:
+        """Refresh the format cell text for a layer."""
         row = self._row_for_layer.get(layer_id)
         if row is None:
             return
-        combo = self.cellWidget(row, COL_FORMAT)
-        if combo is None:
+        item = self.item(row, COL_FORMAT)
+        if item is None:
             return
-        idx = combo.currentIndex()
-        if 0 <= idx < len(formats):
-            driver = formats[idx][1]
-            old = self._format_overrides.get(layer_id, "")
-            if driver != old:
-                self._format_overrides[layer_id] = driver
-                self.format_changed.emit(layer_id, driver)
-
-    def set_format_override(self, layer_id: str, driver: str) -> None:
-        """Set the format override for a layer. Empty string means default (global)."""
-        self._format_overrides[layer_id] = driver
-        row = self._row_for_layer.get(layer_id)
-        if row is None:
-            return
-        combo = self.cellWidget(row, COL_FORMAT)
-        if combo is None:
-            return
-        layer = QgsProject.instance().mapLayer(layer_id)
-        is_vector = isinstance(layer, QgsVectorLayer)
-        formats = VECTOR_FORMATS if is_vector else RASTER_FORMATS
-        for idx, (_label, d) in enumerate(formats):
-            if d == driver:
-                combo.blockSignals(True)
-                combo.setCurrentIndex(idx)
-                combo.blockSignals(False)
-                break
-
-    def get_format_override(self, layer_id: str) -> str:
-        """Return the format override for a layer, or empty string for default."""
-        return self._format_overrides.get(layer_id, "")
+        drivers = self._format_overrides.get(layer_id, set())
+        item.setText(self._format_display_text(drivers))
 
     def set_filter(self, layer_id: str, expression: str) -> None:
         """Set a filter expression badge for a specific layer."""
@@ -306,6 +373,86 @@ class LayerTableWidget(QTableWidget):
     def get_field_filter(self, layer_id: str) -> list[str] | None:
         """Return selected field names for a layer, or None for all fields."""
         return self._field_filters.get(layer_id)
+
+    def get_field_type_overrides(self, layer_id: str) -> dict[str, str] | None:
+        """Return field name → overridden type name for a layer, or None."""
+        return self._field_type_overrides.get(layer_id)
+
+    def get_field_export_names(self, layer_id: str) -> dict[str, str] | None:
+        """Return field name → export name mapping for a layer, or None."""
+        return self._field_export_names.get(layer_id)
+
+    def get_encoding(self, layer_id: str) -> str:
+        """Return the encoding for a layer, or 'UTF-8' as default."""
+        return self._encodings.get(layer_id, "UTF-8")
+
+    def get_save_selected_only(self, layer_id: str) -> bool:
+        """Return whether to export only selected features for a layer."""
+        return self._save_selected_only.get(layer_id, False)
+
+    def get_use_aliases(self, layer_id: str) -> bool:
+        """Return whether to use field aliases for export column names."""
+        return self._use_aliases.get(layer_id, False)
+
+    def get_persist_metadata(self, layer_id: str) -> bool:
+        """Return whether to persist layer metadata in the output."""
+        return self._persist_metadata.get(layer_id, False)
+
+    def get_geometry_type_override(self, layer_id: str) -> str:
+        """Return the geometry type override for a layer (empty string = automatic)."""
+        return self._geometry_type_override.get(layer_id, "")
+
+    def get_force_z(self, layer_id: str) -> bool:
+        """Return whether to force Z dimension in the output geometry."""
+        return self._force_z.get(layer_id, False)
+
+    def get_force_multi(self, layer_id: str) -> bool:
+        """Return whether to force multi-type geometry in the output."""
+        return self._force_multi.get(layer_id, False)
+
+    def get_filter_extent(self, layer_id: str) -> str:
+        """Return the spatial extent filter as 'xmin,ymin,xmax,ymax' or empty string."""
+        return self._filter_extents.get(layer_id, "")
+
+    def get_raster_resolution_x(self, layer_id: str) -> float:
+        return self._raster_resolution_x.get(layer_id, 0.0)
+
+    def get_raster_resolution_y(self, layer_id: str) -> float:
+        return self._raster_resolution_y.get(layer_id, 0.0)
+
+    def get_raster_nodata(self, layer_id: str) -> str:
+        return self._raster_nodata.get(layer_id, "")
+
+    def get_skip_attribute_creation(self, layer_id: str) -> bool:
+        return self._skip_attr_creation.get(layer_id, False)
+
+    def get_include_constraints(self, layer_id: str) -> bool:
+        return self._include_constraints.get(layer_id, False)
+
+    def get_datasource_options(self, layer_id: str) -> list[str] | None:
+        """Return datasource creation options for a layer, or None."""
+        val = self._datasource_options.get(layer_id)
+        return val if val else None
+
+    def get_layer_options(self, layer_id: str) -> list[str] | None:
+        """Return layer creation options for a layer, or None."""
+        val = self._layer_options.get(layer_id)
+        return val if val else None
+
+    def get_description(self, layer_id: str) -> str:
+        return self._layer_description.get(layer_id, "")
+
+    def get_layer_fid(self, layer_id: str) -> str:
+        return self._layer_fid.get(layer_id, "")
+
+    def get_geometry_name(self, layer_id: str) -> str:
+        return self._layer_geom_name.get(layer_id, "")
+
+    def get_identifier(self, layer_id: str) -> str:
+        return self._layer_identifier.get(layer_id, "")
+
+    def get_spatial_index(self, layer_id: str) -> str:
+        return self._layer_spatial_index.get(layer_id, "")
 
     def set_field_filter(self, layer_id: str, field_names: list[str] | None) -> None:
         """Set which fields to include for a layer. None means all fields."""
@@ -402,7 +549,28 @@ class LayerTableWidget(QTableWidget):
             self._apply_export_name_style(item, new_name, layer.name() if layer else "")
             self.export_name_changed.emit(layer_id, new_name)
 
+    def _on_format_clicked(self, row: int) -> None:
+        layer_id = self._layer_id_for_row(row)
+        if not layer_id:
+            return
+        current = self._format_overrides.get(layer_id, set())
+        dlg = _FormatOverrideDialog(layer_id, current, self)
+        if dlg.exec():
+            new_drivers = dlg.selected_drivers()
+            if new_drivers:
+                self._format_overrides[layer_id] = new_drivers
+            elif layer_id in self._format_overrides:
+                del self._format_overrides[layer_id]
+            self._update_format_display(layer_id)
+            self.format_changed.emit(
+                layer_id,
+                ",".join(sorted(new_drivers)),
+            )
+
     def _on_cell_clicked(self, row: int, col: int) -> None:
+        if col == COL_FORMAT and self._show_format:
+            self._on_format_clicked(row)
+            return
         if col != COL_CRS:
             return
         layer_id = self._layer_id_for_row(row)
@@ -419,6 +587,28 @@ class LayerTableWidget(QTableWidget):
             layer_id,
             current,
             selected_fields=self._field_filters.get(layer_id),
+            field_type_overrides=self._field_type_overrides.get(layer_id),
+            current_encoding=self._encodings.get(layer_id, "UTF-8"),
+            save_selected_only=self._save_selected_only.get(layer_id, False),
+            use_aliases_for_names=self._use_aliases.get(layer_id, False),
+            persist_layer_metadata=self._persist_metadata.get(layer_id, False),
+            geometry_type_override=self._geometry_type_override.get(layer_id, ""),
+            force_z=self._force_z.get(layer_id, False),
+            force_multi=self._force_multi.get(layer_id, False),
+            filter_extent=self._filter_extents.get(layer_id, ""),
+            datasource_options=self._datasource_options.get(layer_id),
+            layer_options=self._layer_options.get(layer_id),
+            raster_resolution_x=self._raster_resolution_x.get(layer_id, 0.0),
+            raster_resolution_y=self._raster_resolution_y.get(layer_id, 0.0),
+            raster_nodata=self._raster_nodata.get(layer_id, ""),
+            skip_attribute_creation=self._skip_attr_creation.get(layer_id, False),
+            include_constraints=self._include_constraints.get(layer_id, False),
+            field_export_names=self._field_export_names.get(layer_id),
+            description=self._layer_description.get(layer_id, ""),
+            layer_fid=self._layer_fid.get(layer_id, ""),
+            geometry_name=self._layer_geom_name.get(layer_id, ""),
+            identifier=self._layer_identifier.get(layer_id, ""),
+            spatial_index=self._layer_spatial_index.get(layer_id, "YES"),
             parent=self,
         )
         if dlg.exec():
@@ -436,6 +626,44 @@ class LayerTableWidget(QTableWidget):
                 self._field_filters[layer_id] = fields
             elif layer_id in self._field_filters:
                 del self._field_filters[layer_id]
+
+            types = dlg.field_type_overrides()
+            if types:
+                self._field_type_overrides[layer_id] = types
+            elif layer_id in self._field_type_overrides:
+                del self._field_type_overrides[layer_id]
+
+            self._encodings[layer_id] = dlg.encoding()
+            self._save_selected_only[layer_id] = dlg.save_selected_only()
+            self._use_aliases[layer_id] = dlg.use_aliases_for_export_name()
+            self._persist_metadata[layer_id] = dlg.persist_layer_metadata()
+            self._geometry_type_override[layer_id] = dlg.geometry_type_override()
+            self._force_z[layer_id] = dlg.force_z_dimension()
+            self._force_multi[layer_id] = dlg.force_multi_type()
+            self._filter_extents[layer_id] = dlg.filter_extent()
+            ds_opts = dlg.datasource_options()
+            self._datasource_options[layer_id] = ds_opts if ds_opts else []
+            lyr_opts = dlg.layer_options()
+            self._layer_options[layer_id] = lyr_opts if lyr_opts else []
+
+            self._raster_resolution_x[layer_id] = dlg.raster_resolution_x()
+            self._raster_resolution_y[layer_id] = dlg.raster_resolution_y()
+            self._raster_nodata[layer_id] = dlg.raster_nodata()
+
+            self._skip_attr_creation[layer_id] = dlg.skip_attribute_creation()
+            self._include_constraints[layer_id] = dlg.include_constraints()
+
+            exp_names = dlg.export_field_names()
+            if exp_names:
+                self._field_export_names[layer_id] = exp_names
+            elif layer_id in self._field_export_names:
+                del self._field_export_names[layer_id]
+
+            self._layer_description[layer_id] = dlg.description()
+            self._layer_fid[layer_id] = dlg.layer_fid()
+            self._layer_geom_name[layer_id] = dlg.geometry_name()
+            self._layer_identifier[layer_id] = dlg.identifier()
+            self._layer_spatial_index[layer_id] = dlg.spatial_index()
 
     def _layer_id_for_row(self, row: int) -> str | None:
         item = self.item(row, COL_SOURCE)
@@ -474,7 +702,6 @@ class LayerTableWidget(QTableWidget):
             f.setItalic(True)
             item.setToolTip("Custom export name")
         else:
-            item.setForeground(QBrush(self.palette().color(QPalette.ColorRole.Text)))
             item.setBackground(QBrush(QColor()))
             f.setBold(False)
             f.setItalic(False)
@@ -486,12 +713,10 @@ class LayerTableWidget(QTableWidget):
         hint = " (click for settings)"
         if not value:
             item.setToolTip("Uses source layer CRS" + hint)
-            item.setForeground(QBrush(self.palette().color(QPalette.ColorRole.Text)))
             return
         crs = QgsCoordinateReferenceSystem(value)
         if crs.isValid():
             item.setToolTip(f"Target CRS: {crs.authid()}" + hint)
-            item.setForeground(QBrush(self.palette().color(QPalette.ColorRole.Text)))
         else:
             item.setToolTip("Invalid CRS" + hint)
             item.setForeground(QBrush(QColor("#b91c1c")))
