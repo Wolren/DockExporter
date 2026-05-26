@@ -257,3 +257,80 @@ def _iter_directory(directory: str):
         arcname = os.path.relpath(full_path, directory)
         with open(full_path, "rb") as f:
             yield arcname, f.read()
+
+
+def pack_woof_py(entries: dict, compress: bool, level: int = 3) -> bytes:
+    """Pack *entries* into a .woof archive (Python fallback)."""
+    return _pack_v2(_iter_dict(entries), compress, level=level)
+
+
+def unpack_woof_py(data: bytes) -> dict:
+    """Unpack a .woof archive from *data* (Python fallback)."""
+    return unpack_woof(data)
+
+
+def list_entries_py(data: bytes) -> list:
+    """Return the list of entry names in a .woof archive (Python fallback)."""
+    if len(data) < HEADER_SIZE:
+        return []
+    if data[0:4] != WOOF_MAGIC:
+        return []
+    version = struct.unpack("<I", data[4:8])[0]
+    if version != WOOF_VERSION_V2:
+        return []
+    _hdr_flags, xor_size, _total_raw = struct.unpack("<QQQ", data[8:32])
+    payload = data[HEADER_SIZE : HEADER_SIZE + xor_size]
+    names: list[str] = []
+    fp = 0
+    ftable_len = len(payload)
+    while fp < ftable_len:
+        flags, name_len = struct.unpack("<II", payload[fp : fp + 8])
+        fp += 8
+        name = payload[fp : fp + name_len].decode("utf-8")
+        fp += name_len
+        names.append(name)
+        if flags & FLAG_ENTRY_ZSTD:
+            data_len = struct.unpack("<Q", payload[fp : fp + 8])[0]
+        else:
+            data_len = struct.unpack("<Q", payload[fp : fp + 8])[0]
+        fp += 8 + data_len
+    return names
+
+
+def unpack_one_py(data: bytes, name: str) -> bytes:
+    """Extract a single entry *name* from a .woof archive (Python fallback)."""
+    if len(data) < HEADER_SIZE:
+        msg = "Truncated .woof file"
+        raise ValueError(msg)
+    if data[0:4] != WOOF_MAGIC:
+        msg = "Not a .woof file"
+        raise ValueError(msg)
+    version = struct.unpack("<I", data[4:8])[0]
+    if version != WOOF_VERSION_V2:
+        msg = f"Unsupported version: {version}"
+        raise ValueError(msg)
+    _hdr_flags, xor_size, _total_raw = struct.unpack("<QQQ", data[8:32])
+    payload = data[HEADER_SIZE : HEADER_SIZE + xor_size]
+    dctx = _zstd.ZstdDecompressor()
+    fp = 0
+    ftable_len = len(payload)
+    target_bytes = name.encode("utf-8")
+    while fp < ftable_len:
+        flags, name_len = struct.unpack("<II", payload[fp : fp + 8])
+        fp += 8
+        entry_name = payload[fp : fp + name_len].decode("utf-8")
+        fp += name_len
+        if flags & FLAG_ENTRY_ZSTD:
+            data_len = struct.unpack("<Q", payload[fp : fp + 8])[0]
+            fp += 8
+            content = dctx.decompress(payload[fp : fp + data_len])
+            fp += data_len
+        else:
+            data_len = struct.unpack("<Q", payload[fp : fp + 8])[0]
+            fp += 8
+            content = bytes(payload[fp : fp + data_len])
+            fp += data_len
+        if entry_name == name:
+            return content
+    msg = f"Entry '{name}' not found"
+    raise KeyError(msg)
