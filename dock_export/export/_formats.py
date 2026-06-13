@@ -193,17 +193,12 @@ def _query_gdal(is_vector: bool) -> set[str]:
         for i in range(gdal.GetDriverCount()):
             drv = gdal.GetDriver(i)
             meta = drv.GetMetadata()
-            can_create = (
-                meta.get("DCAP_CREATE") == "YES" or meta.get("DCAP_CREATECOPY") == "YES"
-            )
+            can_create = meta.get("DCAP_CREATE") == "YES" or meta.get("DCAP_CREATECOPY") == "YES"
             if not can_create:
                 continue
             if is_vector and meta.get("DCAP_VECTOR") == "YES":
                 # Skip database/cloud/API drivers that require live connections
-                if (
-                    meta.get("DMD_CONNECTION_PREFIX")
-                    or drv.ShortName in _EXCLUDED_VECTOR_DRIVERS
-                ):
+                if meta.get("DMD_CONNECTION_PREFIX") or drv.ShortName in _EXCLUDED_VECTOR_DRIVERS:
                     continue
                 available.add(drv.ShortName)
             elif not is_vector and meta.get("DCAP_RASTER") == "YES":

@@ -1,6 +1,6 @@
 # Dock Export
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![License: GPL v2+](https://img.shields.io/badge/License-GPLv2+-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![QGIS 3.22+](https://img.shields.io/badge/QGIS-3.22+-green)](https://www.qgis.org/)
 [![QGIS 4.0+](https://img.shields.io/badge/QGIS-4.0+-green)](https://www.qgis.org/)
@@ -23,7 +23,6 @@ Dock Export replaces that with one dock, combining what would normally take mult
 ---
 
 ### Gallery
-
 
 | Single Files Tab                            | GeoPackage Tab                          | Project Export Tab                             | History Tab                             |
 | ------------------------------------------- | --------------------------------------- | ---------------------------------------------- | --------------------------------------- |
@@ -117,4 +116,4 @@ The native Rust crate (`native_woof_impl`) powers the format: each entry has its
 
 ## License
 
-GNU General Public License v3.0. See `LICENSE`.
+GNU General Public License v2.0 or later. See `LICENSE`.

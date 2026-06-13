@@ -49,10 +49,10 @@ from qgis.PyQt.QtWidgets import (
     QWidget,
 )
 
-from ._utils import collect_sidecar_files
-from .arcpy_helper import generate_script_text
-from .export_engine import layer_export_block_reason
-from .woof import pack_woof_to_file
+from ..export._utils import collect_sidecar_files
+from ..export.arcpy_helper import generate_script_text
+from ..export.export_engine import layer_export_block_reason
+from ..woof.woof import pack_woof_to_file
 
 logger = logging.getLogger("DockExport.ProjectExport")
 
@@ -566,28 +566,6 @@ class ProjectExportTab(QWidget):
         else:
             self._do_zip_export(out_path, layers)
 
-    @staticmethod
-    def _find_common_parent(paths: list[str]) -> str:
-        """Find the longest common parent directory across all paths.
-
-        Falls back to the project directory, then to the first path's drive root.
-        """
-        try:
-            common = os.path.commonpath(paths)
-            if common and os.path.isdir(common):
-                return common
-        except ValueError:
-            pass
-        # Fallback: use the project directory (avoids ugly cross-drive paths)
-        proj_file = QgsProject.instance().fileName()
-        if proj_file:
-            proj_dir = os.path.dirname(proj_file)
-            if os.path.isdir(proj_dir):
-                return proj_dir
-        # Last resort: use the first path's drive root
-        drive = os.path.splitdrive(paths[0])[0]
-        return drive + os.sep if drive else os.path.sep
-
     def _prepare_archive_bundle(
         self,
         layers: list[QgsMapLayer],
@@ -632,19 +610,42 @@ class ProjectExportTab(QWidget):
         tmpdir = tempfile.mkdtemp(prefix="bundle_")
 
         try:
-            # 5. Build path map (remote layers preserve their original datasource URLs)
+            # 5. Build flat path map: vectors/<name>, rasters/<name>, resources/<name>
             self._progress.setValue(30)
-            common_parent = self._find_common_parent(all_files) if all_files else tmpdir
+            source_type: dict[str, str] = {}
+            for layer in layers:
+                src = _source_file_path(layer)
+                if src:
+                    norm = os.path.normpath(src)
+                    if isinstance(layer, QgsVectorLayer):
+                        source_type[norm] = "vector"
+                    elif isinstance(layer, QgsRasterLayer):
+                        source_type[norm] = "raster"
+            file_to_source: dict[str, str] = {}
+            for src_key, flist in source_map.items():
+                for fp in flist:
+                    file_to_source[os.path.normpath(fp)] = src_key
             path_map: dict[str, str] = {}
+            used: set[str] = set()
             for filepath in all_files:
                 if not os.path.exists(filepath):
                     errors.append(f"Missing: {filepath}")
                     continue
-                try:
-                    rel = os.path.relpath(filepath, common_parent)
-                except ValueError:
-                    rel = filepath.replace(":", "_").replace("\\", "/").lstrip("/")
-                path_map[os.path.normpath(filepath)] = rel.replace(os.sep, "/")
+                norm = os.path.normpath(filepath)
+                basename = os.path.basename(norm)
+                name, ext = os.path.splitext(basename)
+                parent_source = file_to_source.get(norm)
+                folder = (
+                    source_type.get(parent_source, "resources") if parent_source else "resources"
+                )
+                arcname = f"{folder}/{basename}"
+                if arcname in used:
+                    counter = 1
+                    while f"{folder}/{name}_{counter}{ext}" in used:
+                        counter += 1
+                    arcname = f"{folder}/{name}_{counter}{ext}"
+                used.add(arcname)
+                path_map[norm] = arcname
 
             if not all_files and not remote_names:
                 QMessageBox.warning(

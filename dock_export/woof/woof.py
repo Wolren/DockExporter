@@ -3,7 +3,7 @@
 import os
 
 try:
-    from ._woof_native import _native_impl as native_woof_impl
+    from .._woof_native import _native_impl as native_woof_impl
 except ImportError:
     from . import woof_python as native_woof_impl
 

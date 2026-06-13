@@ -7,6 +7,7 @@ import os
 import time
 from contextlib import suppress
 from datetime import datetime
+from typing import ClassVar
 
 from qgis.core import (
     QgsCoordinateReferenceSystem,
@@ -41,11 +42,12 @@ from qgis.PyQt.QtWidgets import (
     QWidget,
 )
 
-from .export_engine import ExportResult, layer_export_block_reason
-from .export_worker import ExportWorker
-from ._formats import get_raster_formats, get_vector_formats
+from ..export.export_engine import ExportEngine, ExportResult, layer_export_block_reason
+from ..export.export_worker import ExportWorker
+from ..export.style_manager import StyleManager
+from ..export._formats import get_raster_formats, get_vector_formats
 from .layer_table_widget import LayerTableWidget
-from .models import ExportSpec, StyleMode
+from ..models import ExportSpec, StyleMode
 from .project_export_tab import ProjectExportTab
 from .sql_filter_widget import SQLFilterDialog
 
@@ -476,12 +478,8 @@ class ExportWidget(QWidget):
         """Re-populate all layer tables from the current QGIS project, preserving filters and CRS overrides."""
         all_layers = list(QgsProject.instance().mapLayers().values())
         valid_ids = {layer.id() for layer in all_layers}
-        self._filters = {
-            lid: expr for lid, expr in self._filters.items() if lid in valid_ids
-        }
-        self._target_crs = {
-            lid: crs for lid, crs in self._target_crs.items() if lid in valid_ids
-        }
+        self._filters = {lid: expr for lid, expr in self._filters.items() if lid in valid_ids}
+        self._target_crs = {lid: crs for lid, crs in self._target_crs.items() if lid in valid_ids}
 
         for table in (self._single_table, self._gpkg_table):
             table.set_global_formats(self._vector_selected, self._raster_selected)
@@ -627,11 +625,7 @@ class ExportWidget(QWidget):
         if first:
             extent = QgsRectangle(-180, -90, 180, 90)
         proj_crs = proj.crs()
-        ref_crs = (
-            proj_crs
-            if proj_crs.isValid()
-            else QgsCoordinateReferenceSystem("EPSG:4326")
-        )
+        ref_crs = proj_crs if proj_crs.isValid() else QgsCoordinateReferenceSystem("EPSG:4326")
         extent_group.setOriginalExtent(extent, ref_crs)
         extent_group.setCurrentExtent(extent, ref_crs)
         extent_group.setOutputCrs(ref_crs)
@@ -679,8 +673,7 @@ class ExportWidget(QWidget):
                 rect = extent_group.outputExtent()
                 if not rect.isNull():
                     self._global_extent_coords = (
-                        f"{rect.xMinimum()},{rect.yMinimum()},"
-                        f"{rect.xMaximum()},{rect.yMaximum()}"
+                        f"{rect.xMinimum()},{rect.yMinimum()},{rect.xMaximum()},{rect.yMaximum()}"
                     )
                     crs = extent_group.outputCrs()
                     self._global_extent_crs = crs.authid() if crs.isValid() else ""
@@ -692,9 +685,7 @@ class ExportWidget(QWidget):
     def _update_global_extent_buttons(self) -> None:
         """Update button text for both tabs to show current global extent state."""
         if self._global_extent_coords:
-            crs_part = (
-                f" ({self._global_extent_crs})" if self._global_extent_crs else ""
-            )
+            crs_part = f" ({self._global_extent_crs})" if self._global_extent_crs else ""
             text = f"Extent: {self._global_extent_coords}{crs_part}"
         else:
             text = "Set global extent..."
@@ -1156,45 +1147,25 @@ class ExportWidget(QWidget):
                         target_crs_authid=target_crs,
                         field_names=self._single_table.get_field_filter(lid),
                         field_types=self._single_table.get_field_type_overrides(lid),
-                        field_export_names=self._single_table.get_field_export_names(
-                            lid
-                        ),
+                        field_export_names=self._single_table.get_field_export_names(lid),
                         encoding=self._single_table.get_encoding(lid),
-                        save_selected_only=self._single_table.get_save_selected_only(
-                            lid
-                        ),
-                        use_aliases_for_export_name=self._single_table.get_use_aliases(
-                            lid
-                        ),
-                        persist_layer_metadata=self._single_table.get_persist_metadata(
-                            lid
-                        ),
-                        geometry_type_override=self._single_table.get_geometry_type_override(
-                            lid
-                        ),
+                        save_selected_only=self._single_table.get_save_selected_only(lid),
+                        use_aliases_for_export_name=self._single_table.get_use_aliases(lid),
+                        persist_layer_metadata=self._single_table.get_persist_metadata(lid),
+                        geometry_type_override=self._single_table.get_geometry_type_override(lid),
                         force_z=self._single_table.get_force_z(lid),
                         force_multi=self._single_table.get_force_multi(lid),
                         filter_extent=self._resolve_extent(
                             layer,
                             self._single_table.get_filter_extent(lid),
                         ),
-                        datasource_options=self._single_table.get_datasource_options(
-                            lid
-                        ),
+                        datasource_options=self._single_table.get_datasource_options(lid),
                         layer_options=self._single_table.get_layer_options(lid),
-                        raster_resolution_x=self._single_table.get_raster_resolution_x(
-                            lid
-                        ),
-                        raster_resolution_y=self._single_table.get_raster_resolution_y(
-                            lid
-                        ),
+                        raster_resolution_x=self._single_table.get_raster_resolution_x(lid),
+                        raster_resolution_y=self._single_table.get_raster_resolution_y(lid),
                         raster_nodata=self._single_table.get_raster_nodata(lid),
-                        skip_attribute_creation=self._single_table.get_skip_attribute_creation(
-                            lid
-                        ),
-                        include_constraints=self._single_table.get_include_constraints(
-                            lid
-                        ),
+                        skip_attribute_creation=self._single_table.get_skip_attribute_creation(lid),
+                        include_constraints=self._single_table.get_include_constraints(lid),
                         description=self._single_table.get_description(lid),
                         layer_fid=self._single_table.get_layer_fid(lid),
                         geometry_name=self._single_table.get_geometry_name(lid),
@@ -1290,9 +1261,7 @@ class ExportWidget(QWidget):
                     save_selected_only=self._gpkg_table.get_save_selected_only(lid),
                     use_aliases_for_export_name=self._gpkg_table.get_use_aliases(lid),
                     persist_layer_metadata=self._gpkg_table.get_persist_metadata(lid),
-                    geometry_type_override=self._gpkg_table.get_geometry_type_override(
-                        lid
-                    ),
+                    geometry_type_override=self._gpkg_table.get_geometry_type_override(lid),
                     force_z=self._gpkg_table.get_force_z(lid),
                     force_multi=self._gpkg_table.get_force_multi(lid),
                     filter_extent=self._resolve_extent(
@@ -1304,9 +1273,7 @@ class ExportWidget(QWidget):
                     raster_resolution_x=self._gpkg_table.get_raster_resolution_x(lid),
                     raster_resolution_y=self._gpkg_table.get_raster_resolution_y(lid),
                     raster_nodata=self._gpkg_table.get_raster_nodata(lid),
-                    skip_attribute_creation=self._gpkg_table.get_skip_attribute_creation(
-                        lid
-                    ),
+                    skip_attribute_creation=self._gpkg_table.get_skip_attribute_creation(lid),
                     include_constraints=self._gpkg_table.get_include_constraints(lid),
                     description=self._gpkg_table.get_description(lid),
                     layer_fid=self._gpkg_table.get_layer_fid(lid),
@@ -1462,6 +1429,20 @@ class ExportWidget(QWidget):
                 if r.success:
                     self._add_result_to_project(r)
 
+        for r in results:
+            if r.success and r.spec.replace_in_project:
+                ExportEngine._replace_project_source(r.spec, r)
+
+        for r in results:
+            if r.success and r.spec.style_mode == StyleMode.EMBED:
+                layer = QgsProject.instance().mapLayer(r.spec.source_layer_id)
+                if layer is not None:
+                    StyleManager.embed_style_in_gpkg(
+                        layer,
+                        r.output_path,
+                        r.spec.export_name,
+                    )
+
         if fail:
             QMessageBox.warning(
                 self,
@@ -1482,11 +1463,7 @@ class ExportWidget(QWidget):
         """Load a successful export result as a new layer in the project."""
         spec = result.spec
         path = result.output_path
-        name = (
-            spec.source_name
-            if getattr(self, "_keep_original_name", False)
-            else spec.export_name
-        )
+        name = spec.source_name if getattr(self, "_keep_original_name", False) else spec.export_name
         if spec.is_raster_driver:
             layer = QgsRasterLayer(path, name)
         elif spec.target_mode == "gpkg" and spec.is_raster_driver:

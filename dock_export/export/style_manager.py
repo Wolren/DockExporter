@@ -5,7 +5,7 @@ import os
 
 from qgis.core import QgsMapLayer, QgsVectorLayer
 
-from .models import StyleMode
+from ..models import StyleMode
 
 logger = logging.getLogger("DockExport.StyleManager")
 

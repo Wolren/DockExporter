@@ -14,7 +14,9 @@ from qgis.core import (
     QgsDataProvider,
     QgsExpression,
     QgsFeature,
+    QgsFeatureRequest,
     QgsFeatureSink,
+    QgsField,
     QgsFields,
     QgsMapLayer,
     QgsProject,
@@ -29,7 +31,7 @@ from qgis.core import (
     QgsWkbTypes,
 )
 
-from .models import ExportResult, ExportSpec, StyleMode
+from ..models import ExportResult, ExportSpec, StyleMode
 from .style_manager import StyleManager
 
 try:
@@ -80,9 +82,6 @@ class ExportEngine:
 
             result = self._export_one(spec)
             results.append(result)
-
-            if result.success and spec.replace_in_project:
-                self._replace_project_source(spec, result)
 
         if progress_cb:
             progress_cb(
@@ -188,10 +187,7 @@ class ExportEngine:
         if target_crs is None:
             return
 
-        if (
-            spec.driver in {"GeoRSS", "GML", "KML"}
-            and target_crs.authid() != "EPSG:4326"
-        ):
+        if spec.driver in {"GeoRSS", "GML", "KML"} and target_crs.authid() != "EPSG:4326":
             target_crs = QgsCoordinateReferenceSystem("EPSG:4326")
 
         no_attribute_drivers = {"DXF", "DGN"}
@@ -215,9 +211,7 @@ class ExportEngine:
             "guid_permalink",
         }
 
-        needs_no_attributes = (
-            spec.driver in no_attribute_drivers or spec.skip_attribute_creation
-        )
+        needs_no_attributes = spec.driver in no_attribute_drivers or spec.skip_attribute_creation
         has_geom_overrides = bool(
             spec.geometry_type_override or spec.force_z or spec.force_multi,
         )
@@ -236,16 +230,12 @@ class ExportEngine:
             clone_field_names = []
         elif spec.driver == "GeoRSS":
             compatible = [
-                f.name()
-                for f in layer.fields()
-                if f.name().lower() in rss_compatible_fields
+                f.name() for f in layer.fields() if f.name().lower() in rss_compatible_fields
             ]
             clone_field_names = compatible
             use_safe_clone = True
         elif spec.driver == "GPX":
-            clone_field_names = [
-                f.name() for f in layer.fields() if f.name().lower() != "fid"
-            ]
+            clone_field_names = [f.name() for f in layer.fields() if f.name().lower() != "fid"]
             use_safe_clone = True
 
         if use_safe_clone:
@@ -330,26 +320,15 @@ class ExportEngine:
         result.output_path = output_path
 
         if is_gpkg_mode:
-            if spec.style_mode != StyleMode.NONE:
+            if spec.style_mode not in (StyleMode.NONE, StyleMode.EMBED):
                 self._style.apply_style_mode(
                     layer,
-                    (
-                        StyleMode.EMBED
-                        if spec.style_mode == StyleMode.EMBED
-                        else spec.style_mode
-                    ),
+                    spec.style_mode,
                     output_path,
                     spec.export_name,
                 )
         elif spec.style_mode not in (StyleMode.NONE, StyleMode.EMBED):
             self._style.apply_style_mode(layer, spec.style_mode, output_path)
-        elif spec.style_mode == StyleMode.EMBED and spec.driver == "GPKG":
-            self._style.apply_style_mode(
-                layer,
-                StyleMode.EMBED,
-                output_path,
-                spec.export_name,
-            )
 
     def _export_raster(
         self,
@@ -406,11 +385,7 @@ class ExportEngine:
                 return
 
             crs = spec.target_crs_authid.strip()
-            if (
-                spec.driver == "MBTiles"
-                and crs
-                and crs not in ("EPSG:4326", "EPSG:3857")
-            ):
+            if spec.driver == "MBTiles" and crs and crs not in ("EPSG:4326", "EPSG:3857"):
                 crs = "EPSG:4326"
 
             translate_kwargs: dict = {"format": spec.driver}
@@ -596,8 +571,7 @@ class ExportEngine:
 
             with gdal.OpenEx(gpkg_path, gdal.OF_UPDATE) as ds:
                 ds.ExecuteSQL(
-                    "UPDATE gpkg_contents SET table_name = ?, "
-                    "identifier = ? WHERE table_name = ?",
+                    "UPDATE gpkg_contents SET table_name = ?, identifier = ? WHERE table_name = ?",
                     None,
                     [table_name, table_name, tmp_name],
                 )
@@ -623,7 +597,8 @@ class ExportEngine:
         force_multi: bool = False,
         include_constraints: bool = False,
     ) -> tuple[QgsVectorLayer | None, int, str]:
-        """Create an in-memory vector layer clone with filter, CRS reprojection, field subset, type overrides, and geometry overrides."""
+        """Create an in-memory vector layer clone with filter, CRS reprojection,
+        field subset, type overrides, and geometry overrides."""
         from qgis.PyQt.QtCore import QVariant
 
         _GEOM_MAP = {

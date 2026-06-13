@@ -314,7 +314,6 @@ def unpack_one_py(data: bytes, name: str) -> bytes:
     dctx = _zstd.ZstdDecompressor()
     fp = 0
     ftable_len = len(payload)
-    target_bytes = name.encode("utf-8")
     while fp < ftable_len:
         flags, name_len = struct.unpack("<II", payload[fp : fp + 8])
         fp += 8

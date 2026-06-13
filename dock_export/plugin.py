@@ -8,8 +8,8 @@ from qgis.PyQt.QtCore import QPoint, Qt
 from qgis.PyQt.QtGui import QAction, QIcon
 from qgis.PyQt.QtWidgets import QFileDialog, QMenu, QMessageBox
 
-from .dock_widget import ExportDockWidget
-from .woof_storage import open_woof_project
+from .ui.dock_widget import ExportDockWidget
+from .woof.woof_storage import open_woof_project
 
 
 class DockExportPlugin:
@@ -58,10 +58,8 @@ class DockExportPlugin:
             self.layer_tree_view.setContextMenuPolicy(
                 Qt.ContextMenuPolicy.CustomContextMenu,
             )
-            self._ctx_connection = (
-                self.layer_tree_view.customContextMenuRequested.connect(
-                    self._on_layer_tree_context_menu,
-                )
+            self._ctx_connection = self.layer_tree_view.customContextMenuRequested.connect(
+                self._on_layer_tree_context_menu,
             )
 
     def unload(self):

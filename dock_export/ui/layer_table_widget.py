@@ -1,4 +1,4 @@
-"""Editable layer table widget. Displays project layers with export names, format overrides, filters, and CRS settings."""
+"""Editable layer table widget with export names, format overrides, filters, and CRS settings."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from qgis.core import (
     QgsVectorLayer,
 )
 from qgis.PyQt.QtCore import Qt, pyqtSignal
-from qgis.PyQt.QtGui import QBrush, QColor, QIcon, QPalette
+from qgis.PyQt.QtGui import QBrush, QColor, QIcon
 from qgis.PyQt.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -28,8 +28,8 @@ from qgis.PyQt.QtWidgets import (
     QVBoxLayout,
 )
 
-from ._formats import get_raster_formats, get_vector_formats
-from .export_engine import layer_export_block_reason
+from ..export._formats import get_raster_formats, get_vector_formats
+from ..export.export_engine import layer_export_block_reason
 from .layer_settings_dialog import LayerSettingsDialog
 
 COL_TYPE = 0
@@ -232,11 +232,7 @@ class LayerTableWidget(QTableWidget):
             type_item.setData(Qt.ItemDataRole.UserRole, layer.id())
             type_item.setIcon(self._icon_for_layer(layer))
             type_tooltip = (
-                "Vector layer"
-                if is_vector
-                else "Raster layer"
-                if is_raster
-                else "Other layer"
+                "Vector layer" if is_vector else "Raster layer" if is_raster else "Other layer"
             )
             if block_reason:
                 type_tooltip += f"\n\nNot exportable:\n{block_reason}"

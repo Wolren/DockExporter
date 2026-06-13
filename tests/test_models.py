@@ -7,7 +7,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from dock_export._formats import AVAILABLE_RASTER_DRIVERS, AVAILABLE_VECTOR_DRIVERS
+from dock_export.export._formats import AVAILABLE_RASTER_DRIVERS, AVAILABLE_VECTOR_DRIVERS
 from dock_export.models import ExportResult, ExportSpec, StyleMode
 
 

@@ -402,8 +402,7 @@ class SQLFilterDialog(QDialog):
         bg = colors.get(kind, "#888")
         self._result_label.setText(msg)
         self._result_label.setStyleSheet(
-            f"color:white; font-size:9pt; padding:6px; "
-            f"border-radius:3px; background:{bg};",
+            f"color:white; font-size:9pt; padding:6px; border-radius:3px; background:{bg};",
         )
 
     def _clear(self) -> None:

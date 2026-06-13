@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ._formats import AVAILABLE_RASTER_DRIVERS as RASTER_DRIVERS
+from .export._formats import AVAILABLE_RASTER_DRIVERS as RASTER_DRIVERS
 
 
 class StyleMode:
@@ -19,7 +19,8 @@ class StyleMode:
 
 @dataclass
 class ExportSpec:
-    """Describes a single layer export job. Stores the source layer ID (not a QgsMapLayer reference) for thread safety."""
+    """Describes a single layer export job.
+    Stores the source layer ID (not a QgsMapLayer reference) for thread safety."""
 
     source_layer_id: str = ""
     source_name: str = ""

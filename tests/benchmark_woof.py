@@ -30,10 +30,10 @@ import zipfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from dock_export.woof_python import (
+from dock_export.woof.woof_python import (
     pack_woof as pack_woof_python,
 )
-from dock_export.woof_python import (
+from dock_export.woof.woof_python import (
     unpack_woof as unpack_woof_python,
 )
 
@@ -286,9 +286,7 @@ def _bench_one(
     meta["overhead_bytes"] = arch - raw
     meta["overhead_pct"] = round((arch - raw) / arch * 100, 2) if arch > 0 else 0
     meta["pack_speed_mbps"] = (
-        round((raw / 1_048_576) / meta["pack_time"], 3)
-        if meta["pack_time"] > 0
-        else 0.0
+        round((raw / 1_048_576) / meta["pack_time"], 3) if meta["pack_time"] > 0 else 0.0
     )
     meta["pack_memory_kb"] = peak_pack // 1024
 
@@ -310,9 +308,7 @@ def _bench_one(
 
     meta["unpack_time"] = sum(unpack_times) / len(unpack_times)
     meta["unpack_speed_mbps"] = (
-        round((raw / 1_048_576) / meta["unpack_time"], 3)
-        if meta["unpack_time"] > 0
-        else 0.0
+        round((raw / 1_048_576) / meta["unpack_time"], 3) if meta["unpack_time"] > 0 else 0.0
     )
     meta["unpack_memory_kb"] = peak_unpack // 1024
 
@@ -745,8 +741,7 @@ def main() -> None:
                 )
         else:
             print(
-                "  Warning: --real-data requested but "
-                "tests/real_data/3.12.2025/ not found",
+                "  Warning: --real-data requested but tests/real_data/3.12.2025/ not found",
             )
 
     if args.scenario == "all":
@@ -913,11 +908,7 @@ def main() -> None:
                 # Update info panel
                 elapsed = time.time() - start_time
                 remaining = total_jobs - (len(completed_list) + 1)
-                eta = (
-                    (elapsed / (len(completed_list) + 1)) * remaining
-                    if completed_list
-                    else 0
-                )
+                eta = (elapsed / (len(completed_list) + 1)) * remaining if completed_list else 0
                 info_text = Text.assemble(
                     ("Current: ", "bold"),
                     (f"[{scenario}] ", "yellow"),
@@ -1011,9 +1002,7 @@ def main() -> None:
 
     if args.html and _HAVE_RICH:
         html_path = (
-            args.output.replace(".md", ".html")
-            if args.output
-            else "tests/benchmark_report.html"
+            args.output.replace(".md", ".html") if args.output else "tests/benchmark_report.html"
         )
         html_console = Console(record=True)
         html_console.print(report)

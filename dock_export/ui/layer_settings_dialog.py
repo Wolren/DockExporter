@@ -54,7 +54,8 @@ class _NoWheelComboBox(QComboBox):
 
 
 class LayerSettingsDialog(QDialog):
-    """Per-layer export settings: CRS, encoding, selected features, field selection with type overrides, aliases, metadata, and geometry options."""
+    """Per-layer export settings: CRS, encoding, selected features, field selection
+    with type overrides, aliases, metadata, and geometry options."""
 
     _COL_CHECK = 0
     _COL_NAME = 1
@@ -206,9 +207,7 @@ class LayerSettingsDialog(QDialog):
             hh = self._field_table.horizontalHeader()
             hh.setSectionResizeMode(self._COL_CHECK, QHeaderView.ResizeMode.Fixed)
             hh.setSectionResizeMode(self._COL_NAME, QHeaderView.ResizeMode.Stretch)
-            hh.setSectionResizeMode(
-                self._COL_EXPORT_NAME, QHeaderView.ResizeMode.Stretch
-            )
+            hh.setSectionResizeMode(self._COL_EXPORT_NAME, QHeaderView.ResizeMode.Stretch)
             hh.setSectionResizeMode(self._COL_TYPE, QHeaderView.ResizeMode.Fixed)
             self._field_table.setColumnWidth(self._COL_CHECK, 28)
             self._field_table.setColumnWidth(self._COL_TYPE, 140)
@@ -617,11 +616,7 @@ class LayerSettingsDialog(QDialog):
 
     def use_aliases_for_export_name(self) -> bool:
         """Return whether to use field aliases as export column names."""
-        return (
-            self._use_aliases_cb.isChecked()
-            if hasattr(self, "_use_aliases_cb")
-            else False
-        )
+        return self._use_aliases_cb.isChecked() if hasattr(self, "_use_aliases_cb") else False
 
     def persist_layer_metadata(self) -> bool:
         """Return whether to persist layer metadata in the output."""
@@ -633,17 +628,12 @@ class LayerSettingsDialog(QDialog):
             return ""
         if not self._extent_group.isChecked():
             return ""
-        if (
-            self._extent_group.extentState()
-            == QgsExtentGroupBox.ExtentState.OriginalExtent
-        ):
+        if self._extent_group.extentState() == QgsExtentGroupBox.ExtentState.OriginalExtent:
             return ""
         rect = self._extent_group.outputExtent()
         if rect.isNull():
             return ""
-        return (
-            f"{rect.xMinimum()},{rect.yMinimum()},{rect.xMaximum()},{rect.yMaximum()}"
-        )
+        return f"{rect.xMinimum()},{rect.yMinimum()},{rect.xMaximum()},{rect.yMaximum()}"
 
     def datasource_options(self) -> list[str]:
         """Return the list of 'KEY=VALUE' datasource creation options."""
@@ -716,11 +706,7 @@ class LayerSettingsDialog(QDialog):
         )
 
     def layer_fid(self) -> str:
-        return (
-            self._layer_fid_edit.text().strip()
-            if hasattr(self, "_layer_fid_edit")
-            else ""
-        )
+        return self._layer_fid_edit.text().strip() if hasattr(self, "_layer_fid_edit") else ""
 
     def geometry_name(self) -> str:
         return (

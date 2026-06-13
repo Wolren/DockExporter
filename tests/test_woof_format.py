@@ -23,7 +23,7 @@ from test_data_gen import (
     write_test_data_to_disk,
 )
 
-from dock_export.woof_python import (
+from dock_export.woof.woof_python import (
     FLAG_XOR,
     HEADER_SIZE,
     WOOF_MAGIC,
@@ -110,15 +110,11 @@ class TestIsCompressible:
             ".py",
         ]:
             assert _is_compressible(f"file{ext}"), f"{ext} should be compressible"
-            assert _is_compressible(f"dir/file{ext}"), (
-                f"dir/file{ext} should be compressible"
-            )
+            assert _is_compressible(f"dir/file{ext}"), f"dir/file{ext} should be compressible"
 
     def test_noncompressible_exts(self):
         for ext in [".gpkg", ".tiff", ".tif", ".png", ".jpg", ".shp", ".dbf"]:
-            assert not _is_compressible(f"file{ext}"), (
-                f"{ext} should NOT be compressible"
-            )
+            assert not _is_compressible(f"file{ext}"), f"{ext} should NOT be compressible"
 
     def test_path_normalization(self):
         assert _is_compressible("data/POINTS.GeoJSON")  # case-insensitive match
@@ -462,9 +458,7 @@ class TestRealData:
         """Archive files (.woof, .zip, .qgz, etc.) should not be packed."""
         if not real_data_entries:
             pytest.skip("No real data found in tests/real_data/")
-        non_archives = {
-            k: v for k, v in real_data_entries.items() if not _is_archive(k)
-        }
+        non_archives = {k: v for k, v in real_data_entries.items() if not _is_archive(k)}
         packed = pack_woof(non_archives, compress=True)
         assert unpack_woof(packed) == non_archives
 

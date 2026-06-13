@@ -11,7 +11,7 @@ import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from dock_export._utils import _SIDECAR_EXTS, collect_sidecar_files
+from dock_export.export._utils import _SIDECAR_EXTS, collect_sidecar_files
 
 
 class TestSidecarExts:

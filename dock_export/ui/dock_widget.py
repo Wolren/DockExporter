@@ -13,8 +13,7 @@ class ExportDockWidget(QgsDockWidget):
         super().__init__("Dock Export", parent)
         self.setObjectName("DockExportDockWidget")
         self.setAllowedAreas(
-            Qt.DockWidgetArea.LeftDockWidgetArea
-            | Qt.DockWidgetArea.RightDockWidgetArea,
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea,
         )
 
         self._export_widget = ExportWidget(iface, parent=self)
