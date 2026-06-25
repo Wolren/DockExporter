@@ -3,11 +3,11 @@
 ## Our Pledge
 
 We as members, contributors, and leaders pledge to make participation in our
-community a harassment-free experience for everyone, regardless of age, body
-size, visible or invisible disability, ethnicity, sex characteristics, gender
-identity and expression, level of experience, education, socio-economic status,
-nationality, personal appearance, race, caste, color, religion, or sexual
-identity and orientation.
+community a harassment-free experience for everyone, regardless of species,
+age, body size, visible or invisible disability, ethnicity, sex characteristics,
+gender identity and expression, level of experience, education, socio-economic
+status, nationality, personal appearance, race, caste, color, religion, sexual
+identity and orientation, or alterhuman identity and experience.
 
 We pledge to act and interact in ways that contribute to an open, welcoming,
 diverse, inclusive, and healthy community.
@@ -16,8 +16,9 @@ diverse, inclusive, and healthy community.
 
 Examples of behavior that contributes to a positive environment:
 
-* Demonstrating empathy and kindness toward other people
+* Demonstrating empathy and kindness toward other beings
 * Being respectful of differing opinions, viewpoints, and experiences
+* Respecting alterhuman identities, experiences, and diversity of being
 * Giving and gracefully accepting constructive feedback
 * Accepting responsibility and apologizing to those affected by our mistakes
 * Focusing on what is best not just for us as individuals, but for the overall community
@@ -28,7 +29,8 @@ Examples of unacceptable behavior:
 * Trolling, insulting or derogatory comments, and personal or political attacks
 * Public or private harassment
 * Publishing others' private information without explicit permission
-* Other conduct which could reasonably be considered inappropriate in a professional setting
+* Misgendering, deadnaming, or invalidating another's identity or species
+* Other conduct which could reasonably be considered inappropriate in a community setting
 
 ## Enforcement Responsibilities
 
