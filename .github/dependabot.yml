@@ -1,0 +1,19 @@
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Europe/Warsaw"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    assignees:
+      - "Wolren"
+    allow:
+      - dependency-type: "direct"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
