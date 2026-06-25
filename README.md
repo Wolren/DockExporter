@@ -6,3 +6,4 @@
 [![QGIS 4.0+](https://img.shields.io/badge/QGIS-4.0+-green)](https://www.qgis.org/)
 [![Qt](https://img.shields.io/badge/Qt-5.x_|_6.x-green)](https://www.qt.io/)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Wolren/DockExporter/badge)](https://securityscorecards.dev/viewer/?uri=github.com/Wolren/DockExporter)
+[![Socket](https://img.shields.io/badge/Socket-Supply%20Chain%20Security-333?logo=socketdotdev)](https://socket.dev)

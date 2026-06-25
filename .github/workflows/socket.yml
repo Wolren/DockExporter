@@ -1,0 +1,23 @@
+name: Socket
+
+on:
+  pull_request:
+    paths:
+      - '**/package.json'
+      - '**/package-lock.json'
+      - '**/pyproject.toml'
+      - '**/requirements*.txt'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '**/pom.xml'
+      - '**/build.gradle*'
+      - '**/gradle.properties'
+
+jobs:
+  socket:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: socketdev/socket-action@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
