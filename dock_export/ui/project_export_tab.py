@@ -736,7 +736,7 @@ class ProjectExportTab(QWidget):
             manifest = build_manifest(
                 entries=entries,
                 path_map=path_map,
-                plugin_version="1.1.0",
+                plugin_version="1.0.0",
                 dependencies=dependencies,
             )
             manifest_bytes = manifest.to_json().encode("utf-8")
