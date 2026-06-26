@@ -7,7 +7,7 @@ jobs:
   stale:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/stale@v9
+      - uses: actions/stale@v10.3.0
         with:
           stale-issue-message: 'This issue has been inactive for 60 days. Stale label applied. Close or comment within 30 days or it will be auto-closed.'
           close-issue-message: 'This issue was closed due to 90 days of inactivity.'
