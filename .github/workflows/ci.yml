@@ -8,6 +8,9 @@ on:
   release:
     types: [published]
 
+permissions:
+  contents: write
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -408,9 +411,10 @@ jobs:
           "
 
       - name: Upload all zips to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/dock_export.zip
-            dist/dock_export-*.zip
-          fail_on_unmatched_files: false
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          echo "Uploading to release tag: $TAG"
+          gh release upload "$TAG" dist/dock_export.zip --clobber
+          for f in dist/dock_export-*.zip; do
+            [ -f "$f" ] && gh release upload "$TAG" "$f" --clobber
+          done
