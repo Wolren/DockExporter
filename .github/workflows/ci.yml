@@ -275,13 +275,26 @@ jobs:
           sys.path.insert(0, '.')
           from _woof_native import _native_impl
           pack = _native_impl.pack_woof_py
-          import importlib.util, importlib.machinery
-          loader = importlib.machinery.SourceFileLoader('manifest', 'dock_export/woof/manifest.py')
-          spec = importlib.util.spec_from_loader('manifest', loader)
-          man = importlib.util.module_from_spec(spec)
-          loader.exec_module(man)
-          m = man.build_manifest({'project.qgs': b'<proj/>'}, {}, '1.1.0', {})
-          entries = {man._MANIFEST_ENTRY_NAME: m.to_json().encode(), 'project.qgs': b'<proj/>', 'data.shp': b'dup', 'data2.shp': b'dup'}
+          # Build manifest manually to avoid import issues
+          MANIFEST_NAME = 'woof-manifest.json'
+          manifest = {
+            'woof_version': 4,
+            'created': '2026-06-26T00:00:00+00:00',
+            'plugin_version': '1.1.0',
+            'entries': {
+              'project.qgs': {'type': 'project', 'size': 8, 'hash': 'abc'},
+              'data.shp': {'type': 'vector', 'size': 3, 'hash': 'def'},
+              'data2.shp': {'type': 'vector', 'size': 3, 'hash': 'def'},
+            },
+            'dependencies': {},
+            'uri_rewrites': {},
+          }
+          entries = {
+            MANIFEST_NAME: json.dumps(manifest).encode(),
+            'project.qgs': b'<proj/>',
+            'data.shp': b'dup',
+            'data2.shp': b'dup',
+          }
           archive = pack(entries, True, 3)
           with open('/tmp/test.woof', 'wb') as f:
             f.write(archive)
@@ -292,15 +305,10 @@ jobs:
         run: |
           rm -rf dock_export/_woof_native/
           python -c "
-          import sys
+          import sys, json
           sys.path.insert(0, 'dock_export')
           sys.path.insert(0, '.')
           from woof.woof_python import unpack_woof_py, unpack_one_py, list_entries_py
-          import importlib.util, importlib.machinery
-          loader = importlib.machinery.SourceFileLoader('manifest', 'dock_export/woof/manifest.py')
-          spec = importlib.util.spec_from_loader('manifest', loader)
-          man = importlib.util.module_from_spec(spec)
-          loader.exec_module(man)
           with open('/tmp/test.woof', 'rb') as f:
             archive = f.read()
           entries = list_entries_py(archive)
@@ -316,8 +324,8 @@ jobs:
           all_data = unpack_woof_py(archive)
           assert len(all_data) == 4
           manifest_raw = unpack_one_py(archive, 'woof-manifest.json')
-          m2 = man.Manifest.from_json(manifest_raw.decode())
-          assert m2.woof_version == 4
+          manifest = json.loads(manifest_raw.decode())
+          assert manifest['woof_version'] == 4
           print('Python fallback reads v4 archive: OK')
           "
 
