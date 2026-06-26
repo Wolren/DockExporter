@@ -29,7 +29,7 @@ EXCLUDE_PATTERNS_PURE = [
     re.compile(r"\.woof$"),
     re.compile(r"\.qgs$"),
     re.compile(r"\.bak$"),
-    re.compile(r"^_woof_native"),  # no native binaries in QGIS zip
+    re.compile(r"_woof_native"),  # no native binaries in QGIS zip
 ]
 
 EXCLUDE_PATTERNS_FULL = [
@@ -39,6 +39,8 @@ EXCLUDE_PATTERNS_FULL = [
     re.compile(r"\.woof$"),
     re.compile(r"\.qgs$"),
     re.compile(r"\.bak$"),
+    re.compile(r"\.lib$"),
+    re.compile(r"\.pdb$"),
 ]
 
 
