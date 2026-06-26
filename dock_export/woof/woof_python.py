@@ -161,7 +161,7 @@ def _pack_v4(entries, compress: bool, level: int = 3) -> bytes:
 
     payload = bytearray()
     seek_entries: list[dict] = []
-    dedup_map: dict[int, tuple[int, int]] = {}
+    dedup_map: dict[int, tuple[int, int, int]] = {}
     dedup_occurred = False
 
     for name, content in sorted_entries:
@@ -170,10 +170,10 @@ def _pack_v4(entries, compress: bool, level: int = 3) -> bytes:
         h = _xxh3_64(content)
 
         if h != 0 and h in dedup_map:
-            existing_offset, existing_size = dedup_map[h]
+            existing_offset, existing_size, existing_flags = dedup_map[h]
             seek_entries.append(
                 {
-                    "flags": 0,
+                    "flags": existing_flags,
                     "name": name,
                     "data_offset": existing_offset,
                     "data_size": existing_size,
@@ -196,7 +196,7 @@ def _pack_v4(entries, compress: bool, level: int = 3) -> bytes:
         data_offset = len(payload)
         data_size = len(data)
         if h != 0:
-            dedup_map[h] = (data_offset, data_size)
+            dedup_map[h] = (data_offset, data_size, flags)
         seek_entries.append(
             {
                 "flags": flags,

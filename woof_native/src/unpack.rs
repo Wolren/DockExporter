@@ -166,16 +166,13 @@ pub fn unpack_woof_py(py: Python<'_>, data: &[u8]) -> PyResult<HashMap<String, P
             if computed != entry.hash {
                 return Err(WoofError::ChecksumMismatch(entry.name.clone()).into());
             }
-            map.insert(
-                entry.name.clone(),
-                PyBytes::new_bound(py, &decompressed).into(),
-            );
+            map.insert(entry.name.clone(), PyBytes::new(py, &decompressed).into());
         } else {
             let computed = xxhash_rust::xxh3::xxh3_64(raw);
             if computed != entry.hash {
                 return Err(WoofError::ChecksumMismatch(entry.name.clone()).into());
             }
-            map.insert(entry.name.clone(), PyBytes::new_bound(py, raw).into());
+            map.insert(entry.name.clone(), PyBytes::new(py, raw).into());
         }
     }
 
@@ -207,13 +204,13 @@ pub fn unpack_one_py(py: Python<'_>, data: &[u8], name: &str) -> PyResult<Py<PyB
         if computed != entry.hash {
             return Err(WoofError::ChecksumMismatch(entry.name.clone()).into());
         }
-        Ok(PyBytes::new_bound(py, &decompressed).into())
+        Ok(PyBytes::new(py, &decompressed).into())
     } else {
         let computed = xxhash_rust::xxh3::xxh3_64(raw);
         if computed != entry.hash {
             return Err(WoofError::ChecksumMismatch(entry.name.clone()).into());
         }
-        Ok(PyBytes::new_bound(py, raw).into())
+        Ok(PyBytes::new(py, raw).into())
     }
 }
 

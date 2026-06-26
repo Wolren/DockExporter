@@ -44,7 +44,8 @@ jobs:
           name: native-${{ runner.os }}
           path: |
             woof_native/target/release/*_native_impl.*
-          if-no-files-found: warn
+            woof_native/target/release/_native_impl.*
+          if-no-files-found: error
 
   # ──────────────────────────────────────────────
   # 2. Pure-Python path: test + package plugin zip
@@ -363,17 +364,33 @@ jobs:
 
           # For each platform-native artifact, create a combined zip
           native_dirs = [d for d in os.listdir('.') if d.startswith('native-')]
+          print(f'Native artifact dirs found: {native_dirs}')
           for nd in native_dirs:
               platform = nd.replace('native-', '').lower()
-              native_files = glob.glob(f'{nd}/*')
+              # Find all files recursively and filter to known extensions
+              all_files = glob.glob(f'{nd}/**/*', recursive=True)
+              native_files = [
+                  f for f in all_files
+                  if os.path.isfile(f)
+                  and not f.endswith('.lib')
+                  and not f.endswith('.pdb')
+                  and not os.path.basename(f).startswith('.')
+              ]
+              print(f'{platform}: all files in {nd}: {[os.path.relpath(f, nd) for f in all_files]}')
               if not native_files:
+                  print(f'No native files in {nd}, skipping {platform}')
                   continue
+              print(f'{platform}: selected native files {[os.path.basename(f) for f in native_files]}')
 
               # Copy native files into _woof_native/ next to plugin source
               target = os.path.join('dock_export', '_woof_native')
               os.makedirs(target, exist_ok=True)
               for nf in native_files:
-                  shutil.copy2(nf, target)
+                  # Windows .dll must be .pyd for Python import
+                  base = os.path.basename(nf)
+                  if base.endswith('.dll'):
+                      base = base[:-4] + '.pyd'
+                  shutil.copy2(nf, os.path.join(target, base))
 
               # Build the combined zip
               import subprocess
@@ -386,8 +403,8 @@ jobs:
               print(f'Created {dst}')
 
               # Clean injected files for next platform
-              for nf in native_files:
-                  os.remove(os.path.join(target, os.path.basename(nf)))
+              if os.path.isdir(target):
+                  shutil.rmtree(target)
           "
 
       - name: Upload all zips to release

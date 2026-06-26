@@ -40,7 +40,7 @@ pub fn pack_archive(
 
     let mut payload = Vec::with_capacity(total_raw);
     let mut seek_entries: Vec<SeekEntry> = Vec::with_capacity(sorted.len());
-    let mut dedup_map: HashMap<u64, (u64, u64)> = HashMap::new();
+    let mut dedup_map: HashMap<u64, (u64, u64, u32)> = HashMap::new();
     let mut dedup_occurred = false;
 
     for entry in sorted {
@@ -49,9 +49,9 @@ pub fn pack_archive(
         let hash_lo = xxhash_rust::xxh3::xxh3_64(&entry.data);
 
         // Check if we've already stored this content
-        if let Some(&(existing_offset, existing_size)) = dedup_map.get(&hash_lo) {
+        if let Some(&(existing_offset, existing_size, existing_flags)) = dedup_map.get(&hash_lo) {
             seek_entries.push(SeekEntry {
-                flags: 0,
+                flags: existing_flags,
                 name,
                 data_offset: existing_offset,
                 data_size: existing_size,
@@ -75,7 +75,7 @@ pub fn pack_archive(
 
         let data_offset = payload.len() as u64;
         let data_size = data.len() as u64;
-        dedup_map.insert(hash_lo, (data_offset, data_size));
+        dedup_map.insert(hash_lo, (data_offset, data_size, flags));
         seek_entries.push(SeekEntry {
             flags,
             name,
@@ -121,7 +121,7 @@ pub fn pack_woof_py<'py>(
     let mut total_raw: usize = 0;
     for (key, val) in dict.iter() {
         let name: String = key.extract()?;
-        let pb: Bound<'py, PyBytes> = val.downcast::<PyBytes>()?.clone();
+        let pb: Bound<'py, PyBytes> = val.cast::<PyBytes>()?.clone();
         total_raw += pb.as_bytes().len();
         raw_entries.push((name, pb));
     }
@@ -129,7 +129,7 @@ pub fn pack_woof_py<'py>(
 
     let mut payload: Vec<u8> = Vec::with_capacity(total_raw);
     let mut seek_entries: Vec<SeekEntry> = Vec::with_capacity(raw_entries.len());
-    let mut dedup_map: HashMap<u64, (u64, u64)> = HashMap::new();
+    let mut dedup_map: HashMap<u64, (u64, u64, u32)> = HashMap::new();
     let mut dedup_occurred = false;
 
     for (name, pb) in raw_entries {
@@ -138,9 +138,9 @@ pub fn pack_woof_py<'py>(
         let hash_lo = xxhash_rust::xxh3::xxh3_64(data_ref);
 
         // Check if we've already stored this content
-        if let Some(&(existing_offset, existing_size)) = dedup_map.get(&hash_lo) {
+        if let Some(&(existing_offset, existing_size, existing_flags)) = dedup_map.get(&hash_lo) {
             seek_entries.push(SeekEntry {
-                flags: 0,
+                flags: existing_flags,
                 name,
                 data_offset: existing_offset,
                 data_size: existing_size,
@@ -164,7 +164,7 @@ pub fn pack_woof_py<'py>(
 
         let data_offset = payload.len() as u64;
         let data_size = data.len() as u64;
-        dedup_map.insert(hash_lo, (data_offset, data_size));
+        dedup_map.insert(hash_lo, (data_offset, data_size, flags));
         seek_entries.push(SeekEntry {
             flags,
             name,
@@ -191,7 +191,7 @@ pub fn pack_woof_py<'py>(
     output.extend_from_slice(&seek_bytes);
     output.extend_from_slice(&payload);
 
-    Ok(PyBytes::new_bound(py, &output).into())
+    Ok(PyBytes::new(py, &output).into())
 }
 
 #[cfg(test)]
