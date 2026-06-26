@@ -411,6 +411,8 @@ jobs:
           "
 
       - name: Upload all zips to release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ github.event.release.tag_name }}"
           echo "Uploading to release tag: $TAG"
