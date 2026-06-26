@@ -6,10 +6,13 @@ use std::cmp::Ordering;
 pub const WOOF_MAGIC: &[u8; 4] = b"WOOF";
 
 /// Current archive format version identifier.
-pub const WOOF_VERSION: u32 = 3;
+pub const WOOF_VERSION: u32 = 4;
 
 /// Bit flag indicating this entry is zstd-compressed.
 pub const FLAG_ENTRY_ZSTD: u32 = 2;
+
+/// Bit flag in header flags indicating content-addressed dedup was applied.
+pub const FLAG_DEDUP: u64 = 1;
 
 /// Byte size of the fixed header (48 bytes).
 pub const HEADER_SIZE: usize = 48;

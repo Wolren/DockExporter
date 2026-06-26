@@ -1,5 +1,6 @@
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Wolren/DockExporter/badge)](https://securityscorecards.dev/viewer/?uri=github.com/Wolren/DockExporter)
 [![Socket](https://img.shields.io/badge/Socket-Supply%20Chain%20Security-333?logo=socketdotdev)](https://socket.dev)
+[![CI](https://github.com/Wolren/DockExporter/actions/workflows/ci.yml/badge.svg)](https://github.com/Wolren/DockExporter/actions/workflows/ci.yml)
 [![License: GPL v2+](https://img.shields.io/badge/License-GPLv2+-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![QGIS 3.22+](https://img.shields.io/badge/QGIS-3.22+-green)](https://www.qgis.org/)
@@ -45,7 +46,7 @@ flowchart LR
     ENG --> SF["Single Files<br>.gpkg .shp .tif ..."]
     ENG --> GPKG["Multi-layer<br>GeoPackage"]
 
-    PET --> WOOF[".woof archive<br>v3 Rust"]
+    PET --> WOOF[".woof archive<br>v4 Rust / Python"]
     PET --> ZIP["ZIP archive"]
 ```
 
@@ -90,7 +91,9 @@ GeoTIFF, Cloud Optimized GeoTIFF, Virtual Raster, ENVI, EHdr (ESRI BIL), PNG, JP
 
 ### Archive export (.woof / ZIP)
 
-- **.woof** — Rust native archive format: xxhash3-64 integrity checks, seek table for random access, per-entry zstd compression, parallel decompression
+- **.woof** — custom archive format with two backend implementations:
+  - **Rust (fast path)** — xxhash3-64 integrity checks, seek table for O(log n) random access, per-entry zstd compression, content-addressed dedup, parallel decompression. Install separately (see below).
+  - **Python (default path)** — same v4 format read/write, per-entry zstd compression, full backward compatibility with Rust-created archives. Shipped in the QGIS official plugin.
 - **ZIP** — standard deflate via Python `zipfile`
 - **Compression** — None / Normal / Heavy (woof: zstd 0 / 3 / 9; ZIP: STORE / DEFLATE+6 / DEFLATE+9)
 - **Remote layers** — WMS, WFS, PostGIS, etc. keep their original datasource URLs
@@ -110,11 +113,49 @@ GeoTIFF, Cloud Optimized GeoTIFF, Virtual Raster, ENVI, EHdr (ESRI BIL), PNG, JP
 
 ## .woof Format
 
-A `.woof` file is a single-file snapshot of a QGIS project. It bundles every file the project depends on — vector datasets, rasters, GeoPackages, styles, world files, layout images, SVGs, report templates — plus the project file itself with all paths rewritten to relative references inside the archive.
+A `.woof` file is a single-file snapshot of a QGIS project. It bundles every file the project depends on — vector datasets, rasters, GeoPackages, styles, world files, layout images, SVGs, report templates — plus the project file itself with all paths rewritten to canonical `woof://` URIs.
 
-Open it from QGIS via Project → Open From → Open `.woof` Project. The archive is extracted in memory and the project loads with all paths resolved. Remote layers keep their original URLs. Scratch and memory layers are noted as not packaged.
+Open it from QGIS via Project → Open From → Open `.woof` Project. The archive is extracted and the project loads with all paths resolved. Remote layers keep their original URLs. Scratch and memory layers are noted as not packaged.
 
-The native Rust crate (`native_woof_impl`) powers the format: each entry has its own zstd compression level, xxhash3-64 hash, and seek-table metadata for random access. Decompression runs in parallel for fast extraction.
+### Dual-path implementation
+
+The `.woof` format has two backend implementations that are 100% archive-compatible:
+
+| Path | Language | Speed | Shipped in QGIS repo? | Features |
+|---|---|---|---|---|
+| **Default (Python)** | Python + `zstandard` | Moderate | ✅ Yes | v4 read/write, per-entry zstd, v2/v3/v4 compat, manifest |
+| **Fast (Rust)** | Rust + PyO3 | 2–5× faster | ❌ Optional install | All of the above + seek table, dedup, xxhash3-64 checksums, parallel decompression |
+
+Archives created by either backend can be read by the other. The Rust path adds performance and integrity guarantees but is not required for basic operation.
+
+### Rust native module (optional performance upgrade)
+
+The Rust crate (`woof_native/`) provides a native PyO3 module that accelerates packing, unpacking, and random-access extraction. To install:
+
+```bash
+# From source (requires Rust toolchain)
+cd woof_native
+cargo build --release
+cp target/release/_native_impl.{dll,pyd,so} ../dock_export/_woof_native/
+
+# Or via pip (when available)
+pip install woof-native
+```
+
+The plugin falls back to pure Python automatically if the native module is absent.
+
+### Manifest
+
+Every `.woof` v4 archive contains a `woof-manifest.json` entry that records:
+
+- Entry types (project, vector, raster, style, resource, arcpy, manifest)
+- Dependency graph (companion files like `.shx`/`.dbf` for `.shp`)
+- `woof://` URI rewrites for portable path resolution
+- Per-entry hashes and sizes
+
+### Content-addressed dedup (Rust only)
+
+When the native module is active, identical content is stored once in the archive payload. Multiple seek entries pointing to different names can reference the same data if their xxhash3-64 hashes match. This is transparent on extraction — the Python fallback reads deduplicated archives correctly.
 
 ## License
 

@@ -9,14 +9,19 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
-use crate::entry::{Entry, SeekEntry, FLAG_ENTRY_ZSTD, HEADER_SIZE, WOOF_MAGIC, WOOF_VERSION};
+use std::collections::HashMap;
+
+use crate::entry::{
+    Entry, SeekEntry, FLAG_DEDUP, FLAG_ENTRY_ZSTD, HEADER_SIZE, WOOF_MAGIC, WOOF_VERSION,
+};
 use crate::error::WoofError;
 use crate::seek_table;
 
-/// Pack entries into the .woof format with a seek table and per-entry xxhash3-64 checksums.
+/// Pack entries into the .woof format with dedup, seek table, and per-entry xxhash3-64 checksums.
 ///
-/// Entries are sorted by name, optionally zstd-compressed per-entry,
-/// and the seek table enables O(log n) lookup and random access.
+/// Entries are sorted by name, optionally zstd-compressed per-entry.
+/// Identical content (same xxhash3-64) is stored once and referenced by multiple
+/// seek entries, enabling transparent dedup.
 ///
 /// # Errors
 /// Returns `WoofError` if zstd compression fails.
@@ -35,10 +40,28 @@ pub fn pack_archive(
 
     let mut payload = Vec::with_capacity(total_raw);
     let mut seek_entries: Vec<SeekEntry> = Vec::with_capacity(sorted.len());
+    let mut dedup_map: HashMap<u64, (u64, u64)> = HashMap::new();
+    let mut dedup_occurred = false;
+
     for entry in sorted {
         let raw_len = entry.data.len() as u64;
         let name = entry.name;
         let hash_lo = xxhash_rust::xxh3::xxh3_64(&entry.data);
+
+        // Check if we've already stored this content
+        if let Some(&(existing_offset, existing_size)) = dedup_map.get(&hash_lo) {
+            seek_entries.push(SeekEntry {
+                flags: 0,
+                name,
+                data_offset: existing_offset,
+                data_size: existing_size,
+                raw_size: raw_len,
+                hash: hash_lo,
+            });
+            dedup_occurred = true;
+            continue;
+        }
+
         let (data, flags) = if compress {
             match zstd::bulk::compress(&entry.data, level) {
                 Ok(compressed) if compressed.len() < entry.data.len() => {
@@ -50,11 +73,14 @@ pub fn pack_archive(
             (entry.data, 0)
         };
 
+        let data_offset = payload.len() as u64;
+        let data_size = data.len() as u64;
+        dedup_map.insert(hash_lo, (data_offset, data_size));
         seek_entries.push(SeekEntry {
             flags,
             name,
-            data_offset: payload.len() as u64,
-            data_size: data.len() as u64,
+            data_offset,
+            data_size,
             raw_size: raw_len,
             hash: hash_lo,
         });
@@ -63,11 +89,12 @@ pub fn pack_archive(
 
     let payload_size = payload.len() as u64;
     let seek_table_bytes = seek_table::encode(&seek_entries);
+    let header_flags: u64 = if dedup_occurred { FLAG_DEDUP } else { 0 };
 
     let mut header = Vec::with_capacity(HEADER_SIZE);
     header.extend_from_slice(WOOF_MAGIC);
     header.extend_from_slice(&WOOF_VERSION.to_le_bytes());
-    header.extend_from_slice(&0u64.to_le_bytes());
+    header.extend_from_slice(&header_flags.to_le_bytes());
     header.extend_from_slice(&(HEADER_SIZE as u64).to_le_bytes());
     header.extend_from_slice(&(HEADER_SIZE as u64 + seek_table_bytes.len() as u64).to_le_bytes());
     header.extend_from_slice(&payload_size.to_le_bytes());
@@ -82,7 +109,7 @@ pub fn pack_archive(
 }
 
 /// `PyO3` bridge for `pack_archive`. Collects `PyBytes` references from the Python dict,
-/// sorts by name, compresses, and produces the final archive.
+/// sorts by name, compresses, deduplicates, and produces the final archive.
 #[pyfunction]
 pub fn pack_woof_py<'py>(
     py: Python<'py>,
@@ -102,10 +129,27 @@ pub fn pack_woof_py<'py>(
 
     let mut payload: Vec<u8> = Vec::with_capacity(total_raw);
     let mut seek_entries: Vec<SeekEntry> = Vec::with_capacity(raw_entries.len());
+    let mut dedup_map: HashMap<u64, (u64, u64)> = HashMap::new();
+    let mut dedup_occurred = false;
+
     for (name, pb) in raw_entries {
         let data_ref = pb.as_bytes();
         let raw_len = data_ref.len() as u64;
         let hash_lo = xxhash_rust::xxh3::xxh3_64(data_ref);
+
+        // Check if we've already stored this content
+        if let Some(&(existing_offset, existing_size)) = dedup_map.get(&hash_lo) {
+            seek_entries.push(SeekEntry {
+                flags: 0,
+                name,
+                data_offset: existing_offset,
+                data_size: existing_size,
+                raw_size: raw_len,
+                hash: hash_lo,
+            });
+            dedup_occurred = true;
+            continue;
+        }
 
         let (data, flags) = if compress {
             match zstd::bulk::compress(data_ref, level) {
@@ -118,11 +162,14 @@ pub fn pack_woof_py<'py>(
             (data_ref.to_vec(), 0)
         };
 
+        let data_offset = payload.len() as u64;
+        let data_size = data.len() as u64;
+        dedup_map.insert(hash_lo, (data_offset, data_size));
         seek_entries.push(SeekEntry {
             flags,
             name,
-            data_offset: payload.len() as u64,
-            data_size: data.len() as u64,
+            data_offset,
+            data_size,
             raw_size: raw_len,
             hash: hash_lo,
         });
@@ -131,11 +178,12 @@ pub fn pack_woof_py<'py>(
 
     let seek_bytes = seek_table::encode(&seek_entries);
     let payload_size = payload.len() as u64;
+    let header_flags: u64 = if dedup_occurred { FLAG_DEDUP } else { 0 };
 
     let mut output = Vec::with_capacity(HEADER_SIZE + seek_bytes.len() + payload.len());
     output.extend_from_slice(WOOF_MAGIC);
     output.extend_from_slice(&WOOF_VERSION.to_le_bytes());
-    output.extend_from_slice(&0u64.to_le_bytes());
+    output.extend_from_slice(&header_flags.to_le_bytes());
     output.extend_from_slice(&(HEADER_SIZE as u64).to_le_bytes());
     output.extend_from_slice(&(HEADER_SIZE as u64 + seek_bytes.len() as u64).to_le_bytes());
     output.extend_from_slice(&payload_size.to_le_bytes());

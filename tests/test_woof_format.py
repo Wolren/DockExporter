@@ -26,10 +26,13 @@ from test_data_gen import (
 from dock_export.woof.woof_python import (
     FLAG_XOR,
     HEADER_SIZE,
+    HEADER_SIZE_V2,
     WOOF_MAGIC,
     WOOF_VERSION_V2,
+    WOOF_VERSION_V4,
     _is_compressible,
     _xor,
+    _pack_v2,
     extract_woof_to_directory,
     pack_woof,
     pack_woof_from_directory,
@@ -42,31 +45,54 @@ from dock_export.woof.woof_python import (
 # ═══════════════════════════════════════════════════════════════════
 
 
-def _parse_header(data: bytes) -> tuple:
-    """Extract header fields for inspection."""
-    assert len(data) >= HEADER_SIZE
+def _parse_header(data: bytes) -> dict:
+    """Extract header fields for inspection. Returns a dict with version-aware fields."""
     magic = data[0:4]
-    version, hdr_flags, xor_size, raw_size = struct.unpack("<IQQQ", data[4:32])
-    return magic, version, hdr_flags, xor_size, raw_size
+    version = struct.unpack("<I", data[4:8])[0]
+    base = {"magic": magic, "version": version}
+    if version == WOOF_VERSION_V2:
+        hdr_flags, payload_size, raw_size = struct.unpack("<QQQ", data[8:32])
+        base.update(
+            {
+                "hdr_flags": hdr_flags,
+                "payload_size": payload_size,
+                "raw_size": raw_size,
+                "payload_offset": HEADER_SIZE_V2,
+            }
+        )
+    else:
+        hdr_flags = struct.unpack("<Q", data[8:16])[0]
+        payload_off = struct.unpack("<Q", data[24:32])[0]
+        payload_sz = struct.unpack("<Q", data[32:40])[0]
+        raw_size = struct.unpack("<Q", data[40:48])[0]
+        base.update(
+            {
+                "hdr_flags": hdr_flags,
+                "payload_size": payload_sz,
+                "raw_size": raw_size,
+                "payload_offset": payload_off,
+            }
+        )
+    return base
 
 
 def _payload(data: bytes) -> bytes:
-    """Extract and XOR-deobfuscate the payload."""
-    _magic, _version, hdr_flags, xor_size, _raw = _parse_header(data)
-    payload = data[HEADER_SIZE : HEADER_SIZE + xor_size]
-    if hdr_flags & FLAG_XOR:
+    """Extract the payload section from a .woof archive."""
+    info = _parse_header(data)
+    payload = data[info["payload_offset"] : info["payload_offset"] + info["payload_size"]]
+    if info["version"] == WOOF_VERSION_V2 and info["hdr_flags"] & FLAG_XOR:
         payload = _xor(payload)
     return payload
 
 
 def _archive_size_info(data: bytes) -> dict:
     """Return aggregate size metrics from a .woof archive."""
-    _magic, _ver, _flags, xor_size, raw_size = _parse_header(data)
+    info = _parse_header(data)
     return {
         "archive_size": len(data),
-        "xor_payload_size": xor_size,
-        "raw_total_declared": raw_size,
-        "overhead": len(data) - xor_size,
+        "payload_size": info["payload_size"],
+        "raw_total_declared": info["raw_size"],
+        "overhead": len(data) - info["payload_size"],
     }
 
 
@@ -80,7 +106,7 @@ class TestWoofConstants:
         assert woof_magic_bytes() == WOOF_MAGIC == b"WOOF"
 
     def test_header_size(self):
-        assert HEADER_SIZE == 32
+        assert HEADER_SIZE == 48
 
 
 class TestXor:
@@ -138,11 +164,10 @@ class TestPackUnpackV2:
 
     def test_header(self, test_entries):
         packed = pack_woof(test_entries, compress=True)
-        magic, ver, flags, _xor_sz, _raw = _parse_header(packed)
-        assert magic == WOOF_MAGIC
-        assert ver == WOOF_VERSION_V2
-        # No flags set in current v2 archives
-        assert flags == 0
+        info = _parse_header(packed)
+        assert info["magic"] == WOOF_MAGIC
+        assert info["version"] == WOOF_VERSION_V4
+        assert isinstance(info["hdr_flags"], int)
 
     def test_identical_files_roundtrip(self):
         """Identical files roundtrip correctly through pack/unpack."""
@@ -217,9 +242,16 @@ class TestRoundtripEdgeCases:
 
 
 class TestCrossVersion:
-    """v2 archives must be readable by unpack_woof."""
+    """All archive versions must be readable by unpack_woof."""
 
-    def test_v2_unpacked_by_auto(self, test_entries):
+    def test_v2_backward_compat(self, test_entries):
+        """Explicitly-created v2 archives must be readable."""
+        from dock_export.woof.woof_python import _iter_dict, _pack_v2
+
+        packed = _pack_v2(_iter_dict(test_entries), compress=True)
+        assert unpack_woof(packed) == test_entries
+
+    def test_v4_roundtrip(self, test_entries):
         packed = pack_woof(test_entries, compress=True)
         assert unpack_woof(packed) == test_entries
 

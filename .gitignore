@@ -94,8 +94,11 @@ tmp/
 woof_native/target/
 woof_native/examples/
 
-# Native module build artifacts
-dock_export/_woof_native/
+# Native module build artifacts (binaries only; __init__.py is tracked)
+dock_export/_woof_native/*.pyd
+dock_export/_woof_native/*.dll
+dock_export/_woof_native/*.so
+dock_export/_woof_native/*.dylib
 
 # Generated benchmark reports
 benchmark_report*.md

@@ -2,27 +2,390 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [main, master]
   pull_request:
-    branches: [master]
+    branches: [main, master]
+  release:
+    types: [published]
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
+
+  # ──────────────────────────────────────────────
+  # 1. Rust native module: test + build (3 OS)
+  # ──────────────────────────────────────────────
+  rust:
+    name: Rust native module
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Test (debug)
+        run: cargo test
+        working-directory: woof_native
+
+      - name: Build (release)
+        run: cargo build --release
+        working-directory: woof_native
+
+      - name: Upload native artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ runner.os }}
+          path: |
+            woof_native/target/release/*_native_impl.*
+          if-no-files-found: warn
+
+  # ──────────────────────────────────────────────
+  # 2. Pure-Python path: test + package plugin zip
+  # ──────────────────────────────────────────────
+  python:
+    name: Python (pure Python)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.12"
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]" 2>/dev/null || pip install -r requirements.txt 2>/dev/null || true
-      - name: Test with pytest
-        run: python -m pytest --tb=short -q 2>/dev/null || echo "No tests found"
-  build:
+          pip install zstandard xxhash pytest
+
+      - name: Remove any native module (simulate QGIS repo)
+        run: |
+          rm -rf dock_export/_woof_native/
+
+      - name: Run tests (pure Python, v4 format)
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, 'dock_export')
+          sys.path.insert(0, '.')
+          from woof.woof_python import pack_woof_py, unpack_woof_py, unpack_one_py, list_entries_py
+
+          # Pack + unpack v4
+          data = pack_woof_py({'a.txt': b'hello'}, True, 3)
+          hdr = data[:48]
+          assert hdr[0:4] == b'WOOF', 'bad magic'
+          import struct
+          ver = struct.unpack('<I', hdr[4:8])[0]
+          assert ver == 4, f'expected v4, got {ver}'
+          assert unpack_woof_py(data)['a.txt'] == b'hello'
+
+          # Dedup: same content stored once
+          dedup_data = pack_woof_py({'a.txt': b'dup', 'b.txt': b'dup'}, True, 3)
+          all_dedup = unpack_woof_py(dedup_data)
+          assert all_dedup['a.txt'] == b'dup'
+          assert all_dedup['b.txt'] == b'dup'
+          assert len(all_dedup) == 2
+
+          # list_entries
+          entries = list_entries_py(dedup_data)
+          names = [e[0] for e in entries]
+          assert 'a.txt' in names
+          assert 'b.txt' in names
+
+          # unpack_one
+          assert unpack_one_py(data, 'a.txt') == b'hello'
+
+          print('Python v4: all tests OK')
+          "
+
+      - name: Run comprehensive Python tests
+        run: |
+          python -c "
+          import sys, os, struct, tempfile
+          sys.path.insert(0, 'dock_export/woof')
+          sys.path.insert(0, '.')
+
+          from woof_python import (
+              pack_woof_py, unpack_woof_py, unpack_one_py, list_entries_py,
+              pack_woof_to_file, extract_woof_to_directory, pack_woof,
+              pack_woof_from_directory, unpack_woof, woof_magic_bytes,
+              WOOF_MAGIC, WOOF_VERSION_V2, WOOF_VERSION_V4, HEADER_SIZE,
+              _pack_v2, _iter_dict,
+          )
+
+          # ── Constants ──
+          assert woof_magic_bytes() == b'WOOF'
+          assert HEADER_SIZE == 48
+
+          # ── Basic v4 roundtrip ──
+          data = pack_woof_py({'a.txt': b'hello'}, True, 3)
+          hdr = data[:48]
+          assert hdr[0:4] == b'WOOF'
+          ver = struct.unpack('<I', hdr[4:8])[0]
+          assert ver == WOOF_VERSION_V4
+          assert unpack_woof_py(data)['a.txt'] == b'hello'
+
+          # ── Dedup ──
+          dedup = pack_woof_py({'a.txt': b'dup', 'b.txt': b'dup'}, True, 3)
+          all_dedup = unpack_woof_py(dedup)
+          assert all_dedup['a.txt'] == b'dup' and all_dedup['b.txt'] == b'dup'
+          assert len(all_dedup) == 2
+
+          # ── list_entries ──
+          lst = list_entries_py(dedup)
+          names = [e[0] for e in lst]
+          assert 'a.txt' in names and 'b.txt' in names
+          for e in lst:
+              assert len(e) == 5  # (name, flags, data_size, raw_size, hash)
+
+          # ── unpack_one ──
+          assert unpack_one_py(data, 'a.txt') == b'hello'
+          assert unpack_one_py(dedup, 'b.txt') == b'dup'
+
+          # ── Not found ──
+          try:
+              unpack_one_py(data, 'missing')
+              assert False, 'should raise'
+          except KeyError:
+              pass
+
+          # ── Empty archive ──
+          empty = pack_woof_py({}, True, 3)
+          assert unpack_woof_py(empty) == {}
+
+          # ── No compression ──
+          raw = pack_woof_py({'raw.bin': b'\xff\xfe\xfd'}, False, 0)
+          assert unpack_woof_py(raw)['raw.bin'] == b'\xff\xfe\xfd'
+
+          # ── extract_woof_to_directory ──
+          td = tempfile.mkdtemp()
+          extract_woof_to_directory(data, td)
+          with open(os.path.join(td, 'a.txt'), 'rb') as f:
+              assert f.read() == b'hello'
+
+          # ── pack_woof_to_file ──
+          out = os.path.join(td, 'test.woof')
+          pack_woof_to_file(out, [('x.txt', b'stream')], True, 3)
+          with open(out, 'rb') as f:
+              assert unpack_woof_py(f.read())['x.txt'] == b'stream'
+
+          # ── pack_woof (public API) ──
+          pub = pack_woof({'pub.txt': b'public'}, compress=True, level=3)
+          assert unpack_woof(pub)['pub.txt'] == b'public'
+          ver = struct.unpack('<I', pub[4:8])[0]
+          assert ver == WOOF_VERSION_V4
+
+          # ── pack_woof_from_directory ──
+          os.makedirs(td + '/sub', exist_ok=True)
+          with open(td + '/sub/f.txt', 'wb') as f:
+              f.write(b'from_dir')
+          dirpack = pack_woof_from_directory(td, compress=True)
+          result = unpack_woof(dirpack)
+          assert any(b'from_dir' in v for v in result.values())
+
+          # ── v2 backward compat ──
+          v2 = _pack_v2(_iter_dict({'old.txt': b'compat'}), True)
+          assert unpack_woof_py(v2)['old.txt'] == b'compat'
+          assert list_entries_py(v2)[0][0] == 'old.txt'
+
+          # ── Bad magic ──
+          try:
+              unpack_woof_py(b'BAD\x00')
+              assert False
+          except ValueError as e:
+              assert 'Not a .woof' in str(e)
+
+          # ── Many small files ──
+          many = {f'f{i:04d}.txt': f'x{i}'.encode() for i in range(500)}
+          packed = pack_woof_py(many, True, 3)
+          assert len(unpack_woof_py(packed)) == 500
+
+          # ── Stress: large compressible ──
+          big = pack_woof_py({'big.qgs': b'A' * 100_000}, True, 3)
+          assert unpack_woof_py(big)['big.qgs'] == b'A' * 100_000
+
+          print('All comprehensive Python tests passed')
+          " 2>&1
+
+      - name: Package pure-Python plugin zip
+        run: |
+          python package_plugin.py --mode pure
+
+      - name: Upload pure-Python plugin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dock_export-pure
+          path: dist/dock_export.zip
+
+  # ──────────────────────────────────────────────
+  # 3. Integration: Rust-created v4 archive tested by Python fallback
+  # ──────────────────────────────────────────────
+  integration:
+    name: Cross-path integration
     runs-on: ubuntu-latest
-    needs: test
+
     steps:
-      - run: echo "Build passed"
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Build native module
+        run: cargo build --release
+        working-directory: woof_native
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install zstandard xxhash pytest
+
+      - name: Install native module
+        run: |
+          mkdir -p dock_export/_woof_native
+          # PyO3 outputs lib_native_impl.so on Linux, _native_impl.dll on Windows,
+          # lib_native_impl.dylib on macOS. Copy whatever exists as .pyd/.so/.dylib.
+          for src in woof_native/target/release/*_native_impl.*; do
+            ext="${src##*.}"
+            case "$ext" in
+              dll)  cp "$src" dock_export/_woof_native/_native_impl.pyd ;;
+              so)   cp "$src" dock_export/_woof_native/_native_impl.so ;;
+              dylib) cp "$src" dock_export/_woof_native/_native_impl.dylib ;;
+            esac
+          done
+          ls -la dock_export/_woof_native/
+
+      - name: Create v4 archive with native module
+        run: |
+          python -c "
+          import sys, json
+          sys.path.insert(0, 'dock_export')
+          sys.path.insert(0, '.')
+          from _woof_native import _native_impl
+          pack = _native_impl.pack_woof_py
+          import importlib.util, importlib.machinery
+          loader = importlib.machinery.SourceFileLoader('manifest', 'dock_export/woof/manifest.py')
+          spec = importlib.util.spec_from_loader('manifest', loader)
+          man = importlib.util.module_from_spec(spec)
+          loader.exec_module(man)
+          m = man.build_manifest({'project.qgs': b'<proj/>'}, {}, '1.1.0', {})
+          entries = {man._MANIFEST_ENTRY_NAME: m.to_json().encode(), 'project.qgs': b'<proj/>', 'data.shp': b'dup', 'data2.shp': b'dup'}
+          archive = pack(entries, True, 3)
+          with open('/tmp/test.woof', 'wb') as f:
+            f.write(archive)
+          print('Native v4 archive created, size:', len(archive))
+          "
+
+      - name: Read v4 archive with Python fallback (native removed)
+        run: |
+          rm -rf dock_export/_woof_native/
+          python -c "
+          import sys
+          sys.path.insert(0, 'dock_export')
+          sys.path.insert(0, '.')
+          from woof.woof_python import unpack_woof_py, unpack_one_py, list_entries_py
+          import importlib.util, importlib.machinery
+          loader = importlib.machinery.SourceFileLoader('manifest', 'dock_export/woof/manifest.py')
+          spec = importlib.util.spec_from_loader('manifest', loader)
+          man = importlib.util.module_from_spec(spec)
+          loader.exec_module(man)
+          with open('/tmp/test.woof', 'rb') as f:
+            archive = f.read()
+          entries = list_entries_py(archive)
+          names = [e[0] for e in entries]
+          print('Entries:', names)
+          assert 'woof-manifest.json' in names
+          assert 'project.qgs' in names
+          assert 'data.shp' in names
+          assert 'data2.shp' in names
+          assert unpack_one_py(archive, 'project.qgs') == b'<proj/>'
+          assert unpack_one_py(archive, 'data.shp') == b'dup'
+          assert unpack_one_py(archive, 'data2.shp') == b'dup'
+          all_data = unpack_woof_py(archive)
+          assert len(all_data) == 4
+          manifest_raw = unpack_one_py(archive, 'woof-manifest.json')
+          m2 = man.Manifest.from_json(manifest_raw.decode())
+          assert m2.woof_version == 4
+          print('Python fallback reads v4 archive: OK')
+          "
+
+  # ──────────────────────────────────────────────
+  # 4. Release: upload both pure and combined zips
+  # ──────────────────────────────────────────────
+  release:
+    name: Release artifacts
+    if: github.event_name == 'release'
+    needs: [rust, python, integration]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install packaging deps
+        run: pip install zstandard
+
+      - name: Package pure-Python plugin zip
+        run: |
+          python package_plugin.py --mode pure
+
+      - name: Package combined plugin zips (inject native shims)
+        run: |
+          python -c "
+          import os, shutil, glob
+
+          # For each platform-native artifact, create a combined zip
+          native_dirs = [d for d in os.listdir('.') if d.startswith('native-')]
+          for nd in native_dirs:
+              platform = nd.replace('native-', '').lower()
+              native_files = glob.glob(f'{nd}/*')
+              if not native_files:
+                  continue
+
+              # Copy native files into _woof_native/ next to plugin source
+              target = os.path.join('dock_export', '_woof_native')
+              os.makedirs(target, exist_ok=True)
+              for nf in native_files:
+                  shutil.copy2(nf, target)
+
+              # Build the combined zip
+              import subprocess
+              subprocess.run(['python', 'package_plugin.py', '--mode', 'full'], check=True)
+
+              # Tag the output with platform
+              src = 'dist/dock_export-full.zip'
+              dst = f'dist/dock_export-{platform}.zip'
+              os.rename(src, dst)
+              print(f'Created {dst}')
+
+              # Clean injected files for next platform
+              for nf in native_files:
+                  os.remove(os.path.join(target, os.path.basename(nf)))
+          "
+
+      - name: Upload all zips to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/dock_export.zip
+            dist/dock_export-*.zip
+          fail_on_unmatched_files: false

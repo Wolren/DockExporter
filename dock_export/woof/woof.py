@@ -8,6 +8,17 @@ except ImportError:
     from . import woof_python as native_woof_impl
 
 
+def read_manifest(data: bytes) -> dict | None:
+    """Read the manifest entry from a .woof archive, or None if absent."""
+    try:
+        raw = unpack_one(data, "woof-manifest.json")
+        import json
+
+        return json.loads(raw)
+    except (KeyError, Exception):
+        return None
+
+
 def pack_woof(
     entries: dict,
     compress: bool = True,

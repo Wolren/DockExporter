@@ -9,9 +9,9 @@ pub mod unpack;
 
 use pyo3::prelude::*;
 
-/// Register all Python-callable functions on the `native_woof_impl` module.
+/// Register all Python-callable functions on the `_native_impl` module.
 #[pymodule]
-fn native_woof_impl(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _native_impl(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(pack::pack_woof_py, m)?)?;
     m.add_function(wrap_pyfunction!(unpack::unpack_woof_py, m)?)?;
     m.add_function(wrap_pyfunction!(unpack::unpack_one_py, m)?)?;

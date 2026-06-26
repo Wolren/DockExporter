@@ -52,6 +52,11 @@ from qgis.PyQt.QtWidgets import (
 from ..export._utils import collect_sidecar_files
 from ..export.arcpy_helper import generate_script_text
 from ..export.export_engine import layer_export_block_reason
+from ..woof.manifest import (
+    _MANIFEST_ENTRY_NAME,
+    build_manifest,
+    to_woof_uri,
+)
 from ..woof.woof import pack_woof_to_file
 
 logger = logging.getLogger("DockExport.ProjectExport")
@@ -569,11 +574,11 @@ class ProjectExportTab(QWidget):
     def _prepare_archive_bundle(
         self,
         layers: list[QgsMapLayer],
-    ) -> tuple[list[str], dict[str, str], str, list[str], list[str]] | None:
+    ) -> tuple[list[str], dict[str, str], str, list[str], list[str], dict[str, list[str]]] | None:
         """Collect source files, save project with rewritten datasources.
 
         Remote layers preserve their original datasource URLs in the project XML.
-        Returns (all_files, path_map, tmpdir, errors, remote_names).
+        Returns (all_files, path_map, tmpdir, errors, remote_names, source_map).
         Caller must clean up tmpdir.  Returns None on abort.
         """
         self._export_btn.setEnabled(False)
@@ -666,10 +671,10 @@ class ProjectExportTab(QWidget):
                 msg = "Failed to save project file"
                 raise RuntimeError(msg)  # noqa: TRY301
 
-            # 7. Rewrite datasource paths in XML
+            # 7. Rewrite datasource paths to woof:// URIs
             self._progress.setValue(85)
             self._info_label.setText("Rewriting project paths…")
-            self._rewrite_project_sources(proj_path, path_map)
+            uri_rewrites = self._rewrite_to_woof_uris(proj_path, path_map)
 
         except Exception as exc:
             shutil.rmtree(tmpdir, ignore_errors=True)
@@ -678,7 +683,7 @@ class ProjectExportTab(QWidget):
             self._export_btn.setEnabled(True)
             return None
 
-        return all_files, path_map, tmpdir, errors, remote_names
+        return all_files, path_map, tmpdir, errors, remote_names, source_map
 
     def _do_woof_export(self, woof_path: str, layers: list[QgsMapLayer]) -> None:
         tree = self._layer_tree_structure() if self._arcpy_cb.isChecked() else None
@@ -686,29 +691,62 @@ class ProjectExportTab(QWidget):
         result = self._prepare_archive_bundle(layers)
         if result is None:
             return
-        all_files, path_map, tmpdir, errors, remote_names = result
+        all_files, path_map, tmpdir, errors, remote_names, source_map = result
 
         self._info_label.setText("Creating .woof archive...")
         self._progress.setMaximum(0)  # indeterminate while preparing
         QgsApplication.processEvents()
 
         try:
+            # Collect all entries first to build the manifest
+            entries: dict[str, bytes] = {}
+            qgs = os.path.join(tmpdir, "project.qgs")
+            with open(qgs, "rb") as f:
+                entries["project.qgs"] = f.read()
+            if tree:
+                entries["layer_tree.json"] = json.dumps(tree, indent=2).encode()
+                entries["open_in_arcgis_pro.py"] = generate_script_text().encode()
+            for filepath in all_files:
+                norm = os.path.normpath(filepath)
+                arcname = path_map.get(norm)
+                if arcname:
+                    with open(filepath, "rb") as f:
+                        entries[arcname] = f.read()
+
+            # Build dependency graph from source_map
+            dependencies: dict[str, list[str]] = {}
+            for src_key, flist in source_map.items():
+                group_arcnames = []
+                for fp in flist:
+                    norm = os.path.normpath(fp)
+                    arc = path_map.get(norm)
+                    if arc:
+                        group_arcnames.append(arc)
+                if group_arcnames:
+                    primary = group_arcnames[0]
+                    companions = group_arcnames[1:]
+                    dependencies[primary] = companions
+                    # Also mark project.qgs dependency on primary
+                    if "project.qgs" not in dependencies:
+                        dependencies["project.qgs"] = []
+                    if primary not in dependencies["project.qgs"]:
+                        dependencies["project.qgs"].append(primary)
+
+            # Build manifest and serialize
+            manifest = build_manifest(
+                entries=entries,
+                path_map=path_map,
+                plugin_version="1.1.0",
+                dependencies=dependencies,
+            )
+            manifest_bytes = manifest.to_json().encode("utf-8")
+
+            sorted_names = sorted(k for k in entries if k != _MANIFEST_ENTRY_NAME)
 
             def _iter_entries():
-                qgs = os.path.join(tmpdir, "project.qgs")
-                with open(qgs, "rb") as f:
-                    yield "project.qgs", f.read()
-                # Include ArcPy helpers inside the archive
-                if tree:
-                    yield "layer_tree.json", json.dumps(tree, indent=2).encode()
-                    script = generate_script_text()
-                    yield "open_in_arcgis_pro.py", script.encode()
-                for filepath in all_files:
-                    norm = os.path.normpath(filepath)
-                    arcname = path_map.get(norm)
-                    if arcname:
-                        with open(filepath, "rb") as f:
-                            yield arcname, f.read()
+                yield _MANIFEST_ENTRY_NAME, manifest_bytes
+                for name in sorted_names:
+                    yield name, entries[name]
 
             def _on_progress(current, total):
                 if total > 0:
@@ -737,7 +775,7 @@ class ProjectExportTab(QWidget):
         result = self._prepare_archive_bundle(layers)
         if result is None:
             return
-        all_files, path_map, tmpdir, errors, remote_names = result
+        all_files, path_map, tmpdir, errors, remote_names, _source_map = result
 
         self._info_label.setText("Creating ZIP archive...")
         self._progress.setMaximum(0)
@@ -799,18 +837,24 @@ class ProjectExportTab(QWidget):
         self._export_btn.setEnabled(True)
 
     @staticmethod
-    def _rewrite_project_sources(proj_path: str, path_map: dict[str, str]) -> None:
-        """Rewrite datasource paths in a .qgs file to point into the archive."""
+    def _rewrite_to_woof_uris(proj_path: str, path_map: dict[str, str]) -> dict[str, str]:
+        """Rewrite datasource paths in a .qgs file to canonical woof:// URIs.
+
+        Returns a reverse map {woof_uri: original_path} for later reversal on extract.
+        """
         proj_src = QgsProject.instance().fileName()
         original_proj_dir = os.path.dirname(proj_src) if proj_src else None
 
         with open(proj_path, encoding="utf-8") as f:
             xml = f.read()
 
-        # Replace original absolute paths with archive-relative paths
+        uri_rewrites: dict[str, str] = {}
         for orig_path, arcname in path_map.items():
+            woof_uri = to_woof_uri(arcname)
+            uri_rewrites[woof_uri] = orig_path
+
             abs_form = orig_path.replace("\\", "/")
-            xml = xml.replace(abs_form, arcname)
+            xml = xml.replace(abs_form, woof_uri)
             if original_proj_dir:
                 try:
                     rel = os.path.relpath(orig_path, original_proj_dir).replace(
@@ -818,11 +862,11 @@ class ProjectExportTab(QWidget):
                         "/",
                     )
                     if rel != abs_form:
-                        xml = xml.replace(rel, arcname)
+                        xml = xml.replace(rel, woof_uri)
                 except ValueError:
                     pass
 
-        # Force project to use paths relative to project file
+        # Force project to use absolute URIs (woof:// won't be confused with relative)
         xml = xml.replace(
             '<Relative type="int">0</Relative>',
             '<Relative type="int">2</Relative>',
@@ -834,3 +878,5 @@ class ProjectExportTab(QWidget):
 
         with open(proj_path, "w", encoding="utf-8") as f:
             f.write(xml)
+
+        return uri_rewrites
