@@ -821,7 +821,10 @@ class ProjectExportTab(QWidget):
     ) -> None:
         self._info_label.setText("Done")
         lines = [f"Packaged {count} source files into:", f"  {out_path}"]
-        lines.append("\nExtract the archive, then open project.qgs")
+        if out_path.lower().endswith(".woof"):
+            lines.append("\nUse 'Open .woof Archive' from the plugin menu to open this project.")
+        else:
+            lines.append("\nExtract the archive, then open project.qgs")
         if self._arcpy_cb.isChecked():
             lines.append("\nArcPy helper (open_in_arcgis_pro.py + layer_tree.json)")
             lines.append("are included inside the archive — extract and run.")

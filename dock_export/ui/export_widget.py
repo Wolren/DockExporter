@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from contextlib import suppress
@@ -42,7 +43,12 @@ from qgis.PyQt.QtWidgets import (
     QWidget,
 )
 
-from ..export.export_engine import ExportEngine, ExportResult, layer_export_block_reason
+from ..export.export_engine import (
+    ExportEngine,
+    ExportResult,
+    gpkg_layer_uri,
+    layer_export_block_reason,
+)
 from ..export.export_worker import ExportWorker
 from ..export.style_manager import StyleManager
 from ..export._formats import get_raster_formats, get_vector_formats
@@ -52,6 +58,7 @@ from .project_export_tab import ProjectExportTab
 from .sql_filter_widget import SQLFilterDialog
 
 SETTINGS_ROOT = "DockExport"
+logger = logging.getLogger("DockExport.ExportWidget")
 
 VECTOR_FORMAT_DEFS = get_vector_formats(include_default=False)
 RASTER_FORMAT_DEFS = get_raster_formats(include_default=False)
@@ -128,11 +135,35 @@ class ExportWidget(QWidget):
         self._connect_project_signals()
 
     @staticmethod
-    def _sanitize_name(name: str) -> str:
-        """Replace filesystem-unsafe characters with underscore."""
-        for ch in r'\/:*?"<>|':
+    def _sanitize_name(name: str, max_len: int = 255) -> str:
+        """Sanitize a name for use as a filename.
+
+        Replaces characters unsafe for Windows/Linux filesystems and SQL identifiers.
+        Collapses repeated underscores, strips leading/trailing junk, and limits length.
+        Falls back to 'unnamed' if the result is empty.
+        """
+        if not name:
+            return "unnamed"
+        for ch in r'\/:*?"<>|\'%;#&=+$,()[]{}@!^~` ':
             name = name.replace(ch, "_")
+        while "__" in name:
+            name = name.replace("__", "_")
+        name = name.strip("_ ")
+        if not name:
+            return "unnamed"
+        if len(name) > max_len:
+            name = name[:max_len].rstrip("_")
+            if not name:
+                return "unnamed"
         return name
+
+    @staticmethod
+    def _sanitize_table_name(name: str) -> str:
+        """Sanitize a name for use as a GPKG table name (max 63 chars).
+
+        Uses _sanitize_name with the SQLite table-name length limit.
+        """
+        return ExportWidget._sanitize_name(name, max_len=63)
 
     def _build_ui(self) -> None:
         """Build the main layout: tabs, layer count label, progress bar, status, and action buttons."""
@@ -1009,11 +1040,13 @@ class ExportWidget(QWidget):
         group_names.reverse()
         clean = []
         for n in group_names:
-            sanitized = ""
-            for ch in n:
-                sanitized += "_" if ch in r'\/:*?"<>|. ' else ch
-            clean.append(sanitized.lower().strip("_"))
-        return "_".join(filter(None, clean))
+            cleaned = ExportWidget._sanitize_name(n, max_len=63).lower()
+            if cleaned:
+                clean.append(cleaned)
+        result = "_".join(clean)
+        if len(result) > 63:
+            result = result[:63].rstrip("_")
+        return result
 
     def _cancel_export(self) -> None:
         """Request cancellation of the current export operation."""
@@ -1049,6 +1082,49 @@ class ExportWidget(QWidget):
 
     def _do_export(self) -> None:
         """Start export for the currently active tab (Single Files or GeoPackage)."""
+        warnings: list[str] = []
+        if self._tabs.currentIndex() == 1:
+            if self._gpkg_embed_cb.isChecked() and self._gpkg_style_cb.isChecked():
+                warnings.append(
+                    "Both 'Embed styles in GPKG' and 'Save QML sidecars' are checked.\n"
+                    "Embedded styles will be used; QML sidecar files will NOT be created.",
+                )
+            if self._gpkg_embed_cb.isChecked() and self._gpkg_overwrite_cb.isChecked():
+                warnings.append(
+                    "'Embed styles in GPKG' with 'Overwrite existing GPKG' will destroy\n"
+                    "previously embedded styles on overwrite.",
+                )
+            if self._gpkg_replace_cb.isChecked() and self._gpkg_preserve_groups_cb.isChecked():
+                group_warn = (
+                    "When preserving groups, table names include the group prefix.\n"
+                    "If the layer was previously replaced without group prefixes,\n"
+                    "the datasource link will change."
+                )
+                if QgsSettings().value(
+                    "DockExport/gpkg_replace",
+                    False,
+                ) and not QgsSettings().value("DockExport/gpkg_preserve_groups", False):
+                    warnings.append(group_warn)
+        elif self._tabs.currentIndex() == 0:
+            embed_idx = 4
+            if self._single_style_combo.currentIndex() == embed_idx:
+                drivers_only_gpkg = all(
+                    d == "GPKG" for d in self._vector_selected | self._raster_selected
+                )
+                if not drivers_only_gpkg:
+                    warnings.append(
+                        "'Embed in GPKG' style mode is selected but some output formats\n"
+                        "are not GPKG. Non-GPKG exports will fall back to QML sidecars.",
+                    )
+        if warnings:
+            reply = QMessageBox.warning(
+                self,
+                "Configuration notes",
+                "\n\n".join(warnings) + "\n\nContinue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
         if self._tabs.currentIndex() == 0:
             self._export_single()
         else:
@@ -1130,6 +1206,9 @@ class ExportWidget(QWidget):
 
             drivers = self._get_layer_drivers(lid, is_raster)
             for driver in drivers:
+                name_for_driver = (
+                    self._sanitize_table_name(exp_name) if driver == "GPKG" else safe_name
+                )
                 em = style_mode
                 if em == StyleMode.EMBED and driver != "GPKG":
                     em = StyleMode.QML
@@ -1137,7 +1216,7 @@ class ExportWidget(QWidget):
                     ExportSpec(
                         source_layer_id=lid,
                         source_name=layer.name(),
-                        export_name=safe_name,
+                        export_name=name_for_driver,
                         target_mode="single",
                         output_path=out_dir,
                         driver=driver,
@@ -1237,11 +1316,12 @@ class ExportWidget(QWidget):
                 skipped.append(f"{exp_name}: {error}")
                 continue
 
-            safe_name = self._sanitize_name(exp_name)
+            safe_name = self._sanitize_table_name(exp_name)
             if self._gpkg_preserve_groups_cb.isChecked():
                 group = self._get_group_path(lid)
                 if group:
-                    safe_name = f"{group}_{safe_name}"
+                    combined = f"{group}_{safe_name}"
+                    safe_name = self._sanitize_table_name(combined)
             specs.append(
                 ExportSpec(
                     source_layer_id=lid,
@@ -1463,17 +1543,23 @@ class ExportWidget(QWidget):
         """Load a successful export result as a new layer in the project."""
         spec = result.spec
         path = result.output_path
+        if not path or not os.path.isfile(path):
+            logger.warning("Add to project: output file missing: %s", path)
+            return
         name = spec.source_name if getattr(self, "_keep_original_name", False) else spec.export_name
         if spec.is_raster_driver:
-            layer = QgsRasterLayer(path, name)
-        elif spec.target_mode == "gpkg" and spec.is_raster_driver:
-            layer = QgsRasterLayer(f"{path}|layername={name}", name)
+            if spec.target_mode == "gpkg":
+                layer = QgsRasterLayer(gpkg_layer_uri(path, name), name)
+            else:
+                layer = QgsRasterLayer(path, name)
         elif spec.target_mode == "gpkg":
-            layer = QgsVectorLayer(f"{path}|layername={name}", name, "ogr")
+            layer = QgsVectorLayer(gpkg_layer_uri(path, name), name, "ogr")
         else:
             layer = QgsVectorLayer(path, name, "ogr")
         if layer and layer.isValid():
             QgsProject.instance().addMapLayer(layer)
+        elif layer:
+            logger.warning("Add to project: loaded layer is invalid: %s", path)
 
     def set_active_layer(self, layer) -> None:
         """Select and scroll to a specific layer in both tables."""

@@ -63,7 +63,9 @@ class StyleManager:
         if not isinstance(layer, QgsVectorLayer):
             return False
         try:
-            uri = f"{gpkg_path}|layername={table_name}"
+            from .export_engine import gpkg_layer_uri
+
+            uri = gpkg_layer_uri(gpkg_path, table_name)
             tmp = QgsVectorLayer(uri, table_name, "ogr")
             if not tmp.isValid():
                 logger.warning("Could not open %s|layername=%s", gpkg_path, table_name)

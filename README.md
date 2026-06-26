@@ -1,7 +1,7 @@
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Wolren/DockExporter/badge)](https://securityscorecards.dev/viewer/?uri=github.com/Wolren/DockExporter)
 [![Socket](https://img.shields.io/badge/Socket-Supply%20Chain%20Security-333?logo=socketdotdev)](https://socket.dev)
 [![CI](https://github.com/Wolren/DockExporter/actions/workflows/ci.yml/badge.svg)](https://github.com/Wolren/DockExporter/actions/workflows/ci.yml)
-[![License: GPL v2+](https://img.shields.io/badge/License-GPLv2+-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.en.html)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![QGIS 3.22+](https://img.shields.io/badge/QGIS-3.22+-green)](https://www.qgis.org/)
 [![QGIS 4.0+](https://img.shields.io/badge/QGIS-4.0+-green)](https://www.qgis.org/)
@@ -159,4 +159,4 @@ When the native module is active, identical content is stored once in the archiv
 
 ## License
 
-GNU General Public License v2.0 or later. See `LICENSE`.
+GNU General Public License v3.0. See `LICENSE`.

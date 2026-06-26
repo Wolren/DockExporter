@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import uuid
 
 from qgis.core import (
@@ -49,6 +50,20 @@ def layer_export_block_reason(layer: QgsMapLayer) -> str:
     if isinstance(layer, (QgsRasterLayer, QgsVectorLayer)):
         return ""
     return "This layer type is not supported by the exporter."
+
+
+def gpkg_layer_uri(path: str, layername: str) -> str:
+    """Build a GPKG URI with proper layername quoting.
+
+    QGIS GPKG layernames that contain special characters (spaces, quotes, etc.)
+    must be double-quoted in the URI. Internal double-quotes are escaped by doubling.
+    """
+    if not layername:
+        return path
+    if re.search(r'["\'|\\\s]', layername):
+        escaped = layername.replace('"', '""')
+        return f'{path}|layername="{escaped}"'
+    return f"{path}|layername={layername}"
 
 
 class ExportEngine:
@@ -747,18 +762,59 @@ class ExportEngine:
         """Repoint the project layer to the newly written export file."""
         layer = QgsProject.instance().mapLayer(spec.source_layer_id)
         if layer is None:
+            logger.warning("Replace source: layer '%s' not found in project", spec.source_layer_id)
             return
+
+        out_path = result.output_path
+        if not out_path:
+            logger.warning("Replace source for '%s': output path is empty", layer.name())
+            return
+
+        if not os.path.isfile(out_path):
+            logger.warning(
+                "Replace source for '%s': output file does not exist: %s",
+                layer.name(),
+                out_path,
+            )
+            return
+
+        export_name = spec.export_name
+        if spec.target_mode == "gpkg" and not export_name:
+            logger.warning(
+                "Replace source for '%s': export name is empty for GPKG target",
+                layer.name(),
+            )
+            return
+
+        layer_name = layer.name() or export_name or "Layer"
 
         try:
             provider_opts = QgsDataProvider.ProviderOptions()
-            provider_opts.transformContext = QgsProject.instance().transformContext()
+            ctx = QgsProject.instance().transformContext()
+            if ctx is not None:
+                provider_opts.transformContext = ctx
 
-            if spec.target_mode == "gpkg":
-                new_uri = f"{result.output_path}|layername={spec.export_name}"
+            if spec.is_raster_driver:
+                if spec.target_mode == "gpkg":
+                    new_uri = gpkg_layer_uri(out_path, export_name)
+                else:
+                    new_uri = out_path
+                provider = "gdal"
+            elif spec.target_mode == "gpkg":
+                new_uri = gpkg_layer_uri(out_path, export_name)
+                provider = "ogr"
             else:
-                new_uri = result.output_path
+                new_uri = out_path
+                provider = "ogr"
 
-            layer.setDataSource(new_uri, layer.name(), "ogr", provider_opts)
+            layer.setDataSource(new_uri, layer_name, provider, provider_opts)
+
+            if not layer.isValid():
+                logger.warning(
+                    "Replace source for '%s': layer became invalid after setting datasource to %s",
+                    layer.name(),
+                    new_uri,
+                )
         except Exception as exc:
             logger.warning(
                 "Could not replace data source for '%s': %s",
