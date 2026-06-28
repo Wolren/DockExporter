@@ -103,8 +103,8 @@ jobs:
             qgis/qgis:${{ matrix.qgis_version }} \
             sh -c "
               set -e
-              if [ ! -d '/plugin/\$PLUGIN_DIR' ]; then
-                echo '::error::Plugin dir /plugin/\$PLUGIN_DIR not found'
+              if [ ! -d \"/plugin/\$PLUGIN_DIR\" ]; then
+                echo \"::error::Plugin dir /plugin/\$PLUGIN_DIR not found\"
                 ls /plugin/
                 exit 1
               fi
