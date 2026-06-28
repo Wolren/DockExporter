@@ -74,8 +74,8 @@ jobs:
       matrix:
         qgis_version:
           - "3.22-focal"
-          - "3.34"
-          - "4.0"
+          - "stable"
+          - "latest"
     steps:
       - uses: actions/checkout@v7
       - name: Test plugin in QGIS ${{ matrix.qgis_version }}
