@@ -57,6 +57,9 @@ env/
 venv/
 ENV/
 
+# EditorConfig (tracked but IDE may hide)
+.editorconfig
+
 # IDE
 .idea/
 .vscode/

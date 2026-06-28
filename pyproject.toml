@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=82.0.1"]
+requires = ["setuptools>=64"]
 build-backend = "setuptools.backends._legacy:_Backend"
 
 [tool.ruff]
@@ -7,10 +7,12 @@ target-version = "py39"
 line-length = 100
 
 [tool.ruff.lint]
-ignore = ["E501"]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+ignore = ["E501", "N802", "N803", "N806"]
 
 [tool.ruff.format]
 quote-style = "double"
+indent-style = "space"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
