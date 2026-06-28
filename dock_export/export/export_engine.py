@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
@@ -22,11 +23,11 @@ from qgis.core import (
     QgsMapLayer,
     QgsProject,
     QgsRasterBlockFeedback,
-    QgsRectangle,
     QgsRasterFileWriter,
     QgsRasterLayer,
     QgsRasterPipe,
     QgsRasterProjector,
+    QgsRectangle,
     QgsVectorFileWriter,
     QgsVectorLayer,
     QgsWkbTypes,
@@ -186,15 +187,13 @@ class ExportEngine:
         if spec.filter_extent:
             parts = spec.filter_extent.split(",")
             if len(parts) == 4:
-                try:
+                with contextlib.suppress(ValueError, TypeError):
                     opts.filterExtent = QgsRectangle(
                         float(parts[0]),
                         float(parts[1]),
                         float(parts[2]),
                         float(parts[3]),
                     )
-                except (ValueError, TypeError):
-                    pass
 
         transform_ctx = QgsProject.instance().transformContext()
 

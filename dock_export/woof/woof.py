@@ -64,7 +64,7 @@ def pack_woof_to_file(
     entry_dict = dict(entries)
     if progress_cb:
         total = len(entry_dict)
-        for idx, name in enumerate(entry_dict):
+        for idx, _name in enumerate(entry_dict):
             progress_cb(idx, total)
     data = native_woof_impl.pack_woof_py(entry_dict, compress, level)
     with open(output_path, "wb") as f:

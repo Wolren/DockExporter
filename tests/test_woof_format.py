@@ -31,8 +31,8 @@ from dock_export.woof.woof_python import (
     WOOF_VERSION_V2,
     WOOF_VERSION_V4,
     _is_compressible,
-    _xor,
     _pack_v2,
+    _xor,
     extract_woof_to_directory,
     pack_woof,
     pack_woof_from_directory,
@@ -246,7 +246,7 @@ class TestCrossVersion:
 
     def test_v2_backward_compat(self, test_entries):
         """Explicitly-created v2 archives must be readable."""
-        from dock_export.woof.woof_python import _iter_dict, _pack_v2
+        from dock_export.woof.woof_python import _iter_dict
 
         packed = _pack_v2(_iter_dict(test_entries), compress=True)
         assert unpack_woof(packed) == test_entries

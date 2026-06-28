@@ -674,7 +674,7 @@ class ProjectExportTab(QWidget):
             # 7. Rewrite datasource paths to woof:// URIs
             self._progress.setValue(85)
             self._info_label.setText("Rewriting project paths…")
-            uri_rewrites = self._rewrite_to_woof_uris(proj_path, path_map)
+            self._rewrite_to_woof_uris(proj_path, path_map)
 
         except Exception as exc:
             shutil.rmtree(tmpdir, ignore_errors=True)
@@ -715,7 +715,7 @@ class ProjectExportTab(QWidget):
 
             # Build dependency graph from source_map
             dependencies: dict[str, list[str]] = {}
-            for src_key, flist in source_map.items():
+            for _src_key, flist in source_map.items():
                 group_arcnames = []
                 for fp in flist:
                     norm = os.path.normpath(fp)

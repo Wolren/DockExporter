@@ -6,8 +6,8 @@ import os
 from qgis.core import QgsProject
 
 from .manifest import (
-    Manifest,
     _MANIFEST_ENTRY_NAME,
+    Manifest,
     from_woof_uri,
 )
 from .woof import extract_woof_to_directory, unpack_one

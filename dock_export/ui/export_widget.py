@@ -14,8 +14,8 @@ from qgis.core import (
     QgsCoordinateReferenceSystem,
     QgsCoordinateTransform,
     QgsProject,
-    QgsRectangle,
     QgsRasterLayer,
+    QgsRectangle,
     QgsSettings,
     QgsVectorLayer,
 )
@@ -43,6 +43,7 @@ from qgis.PyQt.QtWidgets import (
     QWidget,
 )
 
+from ..export._formats import get_raster_formats, get_vector_formats
 from ..export.export_engine import (
     ExportEngine,
     ExportResult,
@@ -51,9 +52,8 @@ from ..export.export_engine import (
 )
 from ..export.export_worker import ExportWorker
 from ..export.style_manager import StyleManager
-from ..export._formats import get_raster_formats, get_vector_formats
-from .layer_table_widget import LayerTableWidget
 from ..models import ExportSpec, StyleMode
+from .layer_table_widget import LayerTableWidget
 from .project_export_tab import ProjectExportTab
 from .sql_filter_widget import SQLFilterDialog
 

@@ -9,7 +9,7 @@ To build the native module locally:
     copy target/release/_native_impl.dll ../dock_export/_woof_native/_native_impl.pyd
 """
 
-try:
-    from ._native_impl import *
-except ImportError:
-    pass
+import contextlib
+
+with contextlib.suppress(ImportError):
+    from ._native_impl import *  # noqa: F403

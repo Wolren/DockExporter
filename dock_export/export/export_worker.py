@@ -2,8 +2,8 @@
 
 from qgis.PyQt.QtCore import QObject, pyqtSignal
 
-from .export_engine import ExportEngine
 from ..models import ExportSpec
+from .export_engine import ExportEngine
 from .style_manager import StyleManager
 
 
