@@ -8,19 +8,19 @@
 
 # Dock Export
 
-Export layers from QGIS without the repetitive clicking. Pick your layers, set things up once, and export to single files, a multi-layer GeoPackage, or a portable `.woof` / ZIP archive.
+Export layers from QGIS to single files, multi-layer GeoPackage, or portable `.woof` / ZIP archives.
 
 ---
 
-## What problem does this solve?
+## Overview
 
-Normally in QGIS, exporting a few layers means right-click → Export → pick format → pick path → repeat. Need the same layer in three formats? Do it three times. Want to filter, reproject, and style? More dialogs per layer. Sharing a 20-layer project? Export them one by one or zip the project file and hope the file paths match.
+QGIS does not provide a single interface for batch-exporting layers in different formats. Each layer must be exported individually, with no built-in way to apply consistent filters, reprojections, or field selections across multiple layers.
 
-Dock Export replaces that with one dock, combining what would normally take multiple plugins (style exporter + project exporter + multi-format batch export) into a single tool:
+Dock Export combines layer selection, format configuration, and batch export into a single dock:
 
-- **Select layers once** from a single list
-- **Configure everything in one place** - rename, filter, reproject, pick fields, apply styles
-- **Export in one click** - single files, one GeoPackage, or a self-contained `.woof` / ZIP archive with rewritten project paths
+- **Select layers** from a single list
+- **Configure export settings** - rename, filter, reproject, pick fields, apply styles
+- **Export** to single files, one GeoPackage, or a self-contained `.woof` / ZIP archive with rewritten project paths
 
 ---
 
@@ -122,8 +122,8 @@ The `.woof` format has two backend implementations that are 100% archive-compati
 
 | Path | Language | Speed | Shipped in QGIS repo? | Features |
 |---|---|---|---|---|
-| **Default (Python)** | Python + `zstandard` | Moderate | ✅ Yes | v4 read/write, per-entry zstd, v2/v3/v4 compat, manifest |
-| **Fast (Rust)** | Rust + PyO3 | 2–5× faster | ❌ Optional install | All of the above + seek table, dedup, xxhash3-64 checksums, parallel decompression |
+| **Default (Python)** | Python + `zstandard` | Moderate | Yes | v4 read/write, per-entry zstd, v2/v3/v4 compat, manifest |
+| **Fast (Rust)** | Rust + PyO3 | 2-5x faster | No (optional install) | All of the above + seek table, dedup, xxhash3-64 checksums, parallel decompression |
 
 Archives created by either backend can be read by the other. The Rust path adds performance and integrity guarantees but is not required for basic operation.
 
