@@ -40,7 +40,11 @@ class TestExportSpec:
             assert ExportSpec(driver=d).is_raster_driver, f"{d} should be raster"
 
     def test_known_vector_drivers(self):
+        # Drivers that appear in both vector and raster lists
+        mixed_drivers = {"PDF", "MBTiles", "GRIB", "JPEG", "JPEGXL", "PNG", "BMP", "XLSX", "ODS"}
         for d in AVAILABLE_VECTOR_DRIVERS:
+            if d in mixed_drivers:
+                continue  # skip mixed-use drivers (vector + raster)
             assert not ExportSpec(driver=d).is_raster_driver, f"{d} should be vector"
 
     def test_file_extension_all(self):
