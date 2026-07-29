@@ -86,7 +86,7 @@ jobs:
           import sys
           plugin_dir = os.environ["PLUGIN_DIR"]
           plugin_path = os.path.join("/plugin", plugin_dir)
-          sys.path.insert(0, plugin_path)
+          sys.path.insert(0, "/plugin")
           mod = importlib.import_module(plugin_dir)
           print(f"Plugin loaded: {mod}")
           for attr in ["classFactory", "metadata", "name"]:
