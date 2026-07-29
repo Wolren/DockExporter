@@ -75,31 +75,218 @@ jobs:
         qgis_version:
           - "3.22-focal"
           - "stable"
+          - "4.2-trixie"
           - "latest"
     steps:
       - uses: actions/checkout@v7
       - name: Test plugin in QGIS ${{ matrix.qgis_version }}
         run: |
-          cat > /tmp/test_plugin.py << 'PYEOF'
+          cat > /tmp/plugin_smoke.py << 'PYEOF'
+          """Advanced QGIS plugin compatibility smoke test.
+          Actually instantiates the plugin, calls initGui()/unload(),
+          and validates Qt5/Qt6 compatibility by exercising real Qt APIs.
+          """
           import importlib
           import os
           import sys
+
           plugin_dir = os.environ["PLUGIN_DIR"]
           plugin_path = os.path.join("/plugin", plugin_dir)
           sys.path.insert(0, "/plugin")
-          mod = importlib.import_module(plugin_dir)
-          print(f"Plugin loaded: {mod}")
-          for attr in ["classFactory", "metadata", "name"]:
-              if hasattr(mod, attr):
-                  print(f"  Has {attr}: {getattr(mod, attr)}")
-          print("Import OK")
+
+          errors = 0
+
+          def log(msg, level="info"):
+              if level == "error":
+                  print(f"::error::{msg}")
+              else:
+                  print(msg)
+
+          # ==== QGIS / Qt version info =====
+          print("=== QGIS / Qt versions ===")
+          try:
+              from qgis.core import Qgis
+              log(f"QGIS version: {Qgis.QGIS_VERSION}")
+              log(f"QGIS release: {Qgis.QGIS_RELEASE_NAME}")
+          except Exception as e:
+              log(f"qgis.core not available: {e}", "error")
+              errors += 1
+
+          try:
+              from qgis.PyQt.QtCore import QT_VERSION_STR, PYQT_VERSION_STR
+              log(f"Qt version: {QT_VERSION_STR}")
+              log(f"PyQt version: {PYQT_VERSION_STR}")
+          except Exception as e:
+              log(f"PyQt not available: {e}", "error")
+              errors += 1
+
+          # ==== Module import =====
+          print()
+          print("=== Plugin import ===")
+          try:
+              mod = importlib.import_module(plugin_dir)
+              log(f"Module loaded: {mod}")
+          except Exception as e:
+              log(f"Plugin import failed: {e}", "error")
+              sys.exit(1)
+
+          # ==== classFactory =====
+          print()
+          print("=== classFactory ===")
+          if not hasattr(mod, "classFactory"):
+              log("Plugin has no classFactory()", "error")
+              sys.exit(1)
+          cf = mod.classFactory
+          log(f"classFactory: {cf}")
+          import inspect
+          sig = inspect.signature(cf)
+          params = list(sig.parameters.keys())
+          log(f"  Parameters: {params}")
+          if "iface" not in params:
+              log("classFactory() missing 'iface' parameter", "error")
+              errors += 1
+
+          # ==== Mock iface =====
+          print()
+          print("=== Plugin instantiation ===")
+
+          from qgis.PyQt.QtCore import Qt
+          from qgis.PyQt.QtWidgets import QAction, QMenu, QWidget, QVBoxLayout
+
+          class MockMainWindow(QWidget):
+              def __init__(self):
+                  super().__init__()
+                  self.setLayout(QVBoxLayout())
+
+          class MockIface:
+              def __init__(self):
+                  self._main_window = MockMainWindow()
+                  self._toolbar_icons = []
+                  self._plugin_menu_actions = []
+                  self._project_menu = QMenu("Project")
+                  self._layer_tree_view = None
+
+              def mainWindow(self): return self._main_window
+
+              def addToolBarIcon(self, action):
+                  self._toolbar_icons.append(action)
+                  log(f"  iface.addToolBarIcon({action.objectName() or action.text()})")
+
+              def removeToolBarIcon(self, action):
+                  if action in self._toolbar_icons: self._toolbar_icons.remove(action)
+                  log(f"  iface.removeToolBarIcon({action.objectName() or action.text()})")
+
+              def addPluginToMenu(self, name, action):
+                  self._plugin_menu_actions.append(action)
+                  log(f"  iface.addPluginToMenu({name}, {action.objectName() or action.text()})")
+
+              def removePluginMenu(self, name, action):
+                  if action in self._plugin_menu_actions: self._plugin_menu_actions.remove(action)
+                  log(f"  iface.removePluginMenu({name}, {action.objectName() or action.text()})")
+
+              def projectMenu(self): return self._project_menu
+
+              def layerTreeView(self):
+                  if self._layer_tree_view is None:
+                      from qgis.PyQt.QtWidgets import QTreeView
+                      self._layer_tree_view = QTreeView()
+                  return self._layer_tree_view
+
+              def addDockWidget(self, area, dockwidget):
+                  log(f"  iface.addDockWidget({area}, {dockwidget.objectName() or 'dock'})")
+
+              def removeDockWidget(self, dockwidget):
+                  log(f"  iface.removeDockWidget({dockwidget.objectName() or 'dock'})")
+
+              def __getattr__(self, name):
+                  def noop(*args, **kwargs): log(f"  iface.{name}(...) [no-op mock]")
+                  return noop
+
+          iface = MockIface()
+
+          try:
+              plugin = cf(iface)
+              log(f"Plugin instantiated: {plugin}")
+          except Exception as e:
+              log(f"Plugin instantiation failed: {e}", "error")
+              errors += 1
+              plugin = None
+
+          # ==== initGui() =====
+          print()
+          print("=== initGui() ===")
+          if plugin is not None:
+              if hasattr(plugin, "initGui"):
+                  try:
+                      plugin.initGui()
+                      log("initGui() completed successfully")
+                  except Exception as e:
+                      import traceback
+                      log(f"initGui() FAILED: {e}", "error")
+                      traceback.print_exc(file=sys.stdout)
+                      errors += 1
+              else:
+                  log("Plugin has no initGui()", "error")
+                  errors += 1
+
+          # ==== unload() =====
+          print()
+          print("=== unload() ===")
+          if plugin is not None and hasattr(plugin, "unload"):
+              try:
+                  plugin.unload()
+                  log("unload() completed successfully")
+              except Exception as e:
+                  import traceback
+                  log(f"unload() FAILED: {e}", "error")
+                  traceback.print_exc(file=sys.stdout)
+                  errors += 1
+
+          # ==== metadata check =====
+          print()
+          print("=== metadata.txt ===")
+          meta_path = os.path.join(plugin_path, "metadata.txt")
+          if os.path.isfile(meta_path):
+              with open(meta_path) as f:
+                  for line in f:
+                      line = line.strip()
+                      if line and not line.startswith("[") and "=" in line:
+                          log(f"  {line}")
+          else:
+              log("metadata.txt not found", "error")
+              errors += 1
+
+          # ==== Run unit tests =====
+          print()
+          tests_path = "/plugin/tests"
+          if os.path.isdir(tests_path):
+              print("=== Running tests ===")
+              import subprocess
+              result = subprocess.run(
+                  [sys.executable, "-m", "pytest", "tests/", "-v", "--tb=short", "-p", "no:cacheprovider"],
+                  cwd="/plugin", capture_output=True, text=True
+              )
+              print(result.stdout)
+              if result.stderr:
+                  print(result.stderr)
+              if result.returncode != 0:
+                  print(f"::warning::Some tests failed (exit code {result.returncode})")
+          else:
+              print("No tests/ directory - import check only")
+
+          print()
+          if errors:
+              log(f"{errors} error(s) found - plugin is NOT compatible with this QGIS version", "error")
+              sys.exit(1)
+          else:
+              print("== ALL COMPATIBILITY CHECKS PASSED ==")
           PYEOF
 
           docker run --rm \
             -v $PWD:/plugin \
             -e PLUGIN_DIR=$PLUGIN_DIR \
             -e QT_QPA_PLATFORM=offscreen \
-            -v /tmp/test_plugin.py:/test_plugin.py \
+            -v /tmp/plugin_smoke.py:/plugin_smoke.py \
             qgis/qgis:${{ matrix.qgis_version }} \
             sh -c "
               set -e
@@ -110,15 +297,5 @@ jobs:
               fi
               mkdir -p /root/.local/share/QGIS/QGIS3/profiles/default/python/plugins
               ln -s /plugin/\$PLUGIN_DIR /root/.local/share/QGIS/QGIS3/profiles/default/python/plugins/\$PLUGIN_DIR
-              echo '=== Plugin import test ==='
-              python3 /test_plugin.py || echo '::warning::Plugin import test failed'
-              if [ -d /plugin/tests ]; then
-                echo ''
-                echo '=== Running tests in QGIS ${{ matrix.qgis_version }} ==='
-                cd /plugin
-                python3 -m pytest tests/ -v --tb=short -p no:cacheprovider \
-                  || echo '::warning::Some tests failed in QGIS ${{ matrix.qgis_version }}'
-              else
-                echo 'No tests/ directory - import check only'
-              fi
+              python3 /plugin_smoke.py
             "
