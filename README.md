@@ -70,15 +70,16 @@ graph LR
 
 ### Formats
 
-**Vector** - detected from GDAL at runtime (about 36 write-capable drivers). Known ones:
+The available drivers are detected from GDAL at runtime. Common write-capable formats:
 
-GPKG, ESRI Shapefile, GeoJSON, GeoJSON (Newline Delimited), KML, LIBKML, CSV, FlatGeobuf, GPX, GML, TopoJSON, SQLite, SpatiaLite, DXF, DGN, MapInfo TAB, GeoParquet, Arrow, MBTiles, OpenFileGDB, ESRI FileGDB, GeoRSS, MVT, PMTiles, JSONFG (OGC JSON), MapML, PDF (Geospatial), VDV, JML (OpenJUMP), PGDUMP (PostgreSQL SQL), MiraMon Vector, GMT ASCII, Selafin, WAsP, XLSX, ODS.
+| Type | Formats |
+|---|---|
+| Vector | GeoPackage, ESRI Shapefile, GeoJSON, KML, CSV, FlatGeobuf, GPX, GML, SQLite, SpatiaLite, DXF, MBTiles, OpenFileGDB, GeoParquet, MVT, PMTiles, XLSX, ODS |
+| Raster | GeoTIFF, Cloud Optimized GeoTIFF, PNG, JPEG, JPEG XL, GIF, NetCDF, BMP, MBTiles, ERDAS Imagine, PCIDSK, GRIB, SAGA GIS, Zarr, PDF (Geospatial), RST |
+
+The exact list depends on the GDAL build in your QGIS installation. See the [GDAL vector format](https://gdal.org/drivers/vector/index.html) and [GDAL raster format](https://gdal.org/drivers/raster/index.html) documentation for the full catalog.
 
 > Database/cloud drivers (MySQL, PostgreSQL, Oracle, Carto, etc.) are excluded - they need live connections, not file paths.
-
-**Raster** - also detected at runtime (21+ write-capable drivers). Known ones:
-
-GeoTIFF, Cloud Optimized GeoTIFF, Virtual Raster, ENVI, EHdr (ESRI BIL), PNG, JPEG, JPEG XL, GIF, NetCDF, BMP, MBTiles, ERDAS Imagine (.img), PCIDSK, NITF, GRIB, SAGA GIS, Zarr, AAIGrid (ASCII), XYZ Grid, PDF (Geospatial), PCRaster, ILWIS, RST (Idrisi), ZMap, SIGDEM.
 
 ### Styles
 
