@@ -1,16 +1,21 @@
-[![CI](https://github.com/Wolren/DockExporter/actions/workflows/ci.yml/badge.svg)](https://github.com/Wolren/DockExporter/actions/workflows/ci.yml)
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Wolren/DockExporter/badge)](https://securityscorecards.dev/viewer/?uri=github.com/Wolren/DockExporter)
-[![Socket](https://img.shields.io/badge/Socket-Supply%20Chain%20Security-333?logo=socketdotdev)](https://socket.dev)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
-[![QGIS 3.22+](https://img.shields.io/badge/QGIS-3.22+-green)](https://qgis.org)
-[![Qt](https://img.shields.io/badge/Qt-5.x_|_6.x-green)](https://www.qt.io/)
+<div align="center">
+
+![Dock Export](dock_export/icons/dock_export.svg)
 
 # Dock Export
 
-Export layers from QGIS to single files, multi-layer GeoPackage, or portable `.woof` / ZIP archives.
+Export layers to single files, multi-layer GeoPackage, or portable `.woof` / ZIP archives.
 
----
+[![License][license-badge]][license-url]
+[![Last commit][commit-badge]][commits-url]
+[![Issues][issues-badge]][issues-url]
+[![Code size][size-badge]][repo-url]
+[![Python][python-badge]][pyproject-url]
+[![QGIS][qgis-badge]][qgis-url]
+[![CI][ci-badge]][ci-url]
+[![OpenSSF Scorecard][scorecard-badge]][scorecard-url]
+
+</div>
 
 ## Overview
 
@@ -22,20 +27,16 @@ Dock Export combines layer selection, format configuration, and batch export int
 - **Configure export settings** - rename, filter, reproject, pick fields, apply styles
 - **Export** to single files, one GeoPackage, or a self-contained `.woof` / ZIP archive with rewritten project paths
 
----
+## Gallery
 
-### Gallery
-
-| Single Files Tab                            | GeoPackage Tab                          | Project Export Tab                             | History Tab                             |
-| ------------------------------------------- | --------------------------------------- | ---------------------------------------------- | --------------------------------------- |
+| Single Files Tab | GeoPackage Tab | Project Export Tab | History Tab |
+|---|---|---|---|
 | ![Single files tab](gallery/single-tab.png) | ![GeoPackage tab](gallery/gpkg-tab.png) | ![Project export tab](gallery/project-tab.png) | ![History tab](gallery/history-tab.png) |
-
----
 
 ## How it works
 
 ```mermaid
-flowchart LR
+graph LR
     L["Project Layers"] --> LTW["LayerTableWidget"]
     LTW --> SPECS["ExportSpec[]"]
     SPECS -->|"Single Files"| ENG["ExportEngine"]
@@ -49,18 +50,15 @@ flowchart LR
     PET --> ZIP["ZIP archive"]
 ```
 
----
-
 ## Features
 
 ### Export modes
 
-
-| Mode               | What it does                                                                        | Best for                                                              |
-| ------------------ | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| **Single Files**   | Each layer → one or more files in a folder (GPKG, Shapefile, GeoTIFF, ...)         | Sending layers individually, converting formats, archiving in folders |
-| **GeoPackage**     | All layers → one`.gpkg` with separate tables                                       | Sharing many layers as one file                                       |
-| **Project Export** | Whole project →`.woof` archive or `.zip` with source files + rewritten project XML | Sending a project to someone, backups, moving between machines        |
+| Mode | What it does | Best for |
+|---|---|---|
+| **Single Files** | Each layer to one or more files in a folder (GPKG, Shapefile, GeoTIFF, ...) | Sending layers individually, converting formats, archiving in folders |
+| **GeoPackage** | All layers to one `.gpkg` with separate tables | Sharing many layers as one file |
+| **Project Export** | Whole project to `.woof` archive or `.zip` with source files + rewritten project XML | Sending a project to someone, backups, moving between machines |
 
 ### Per-layer controls
 
@@ -103,18 +101,16 @@ GeoTIFF, Cloud Optimized GeoTIFF, Virtual Raster, ENVI, EHdr (ESRI BIL), PNG, JP
 ### QGIS integration
 
 - Docks in the main QGIS window
-- Right-click a layer → opens Dock Export with it preselected
-- `.woof` files open from Project → Open From → Open `.woof` Project
+- Right-click a layer to open Dock Export with it preselected
+- `.woof` files open from Project -> Open From -> Open `.woof` Project
 - Auto-refreshes when layers are added, removed, or renamed
 - Settings persist between sessions via `QgsSettings`
-
----
 
 ## .woof Format
 
 A `.woof` file is a single-file snapshot of a QGIS project. It bundles every file the project depends on - vector datasets, rasters, GeoPackages, styles, world files, layout images, SVGs, report templates - plus the project file itself with all paths rewritten to canonical `woof://` URIs.
 
-Open it from QGIS via Project → Open From → Open `.woof` Project. The archive is extracted and the project loads with all paths resolved. Remote layers keep their original URLs. Scratch and memory layers are noted as not packaged.
+Open it from QGIS via Project -> Open From -> Open `.woof` Project. The archive is extracted and the project loads with all paths resolved. Remote layers keep their original URLs. Scratch and memory layers are noted as not packaged.
 
 ### Dual-path implementation
 
@@ -156,6 +152,17 @@ Every `.woof` v4 archive contains a `woof-manifest.json` entry that records:
 
 When the native module is active, identical content is stored once in the archive payload. Multiple seek entries pointing to different names can reference the same data if their xxhash3-64 hashes match. This is transparent on extraction - the Python fallback reads deduplicated archives correctly.
 
+## Tech stack
+
+| Tool | Purpose |
+|---|---|
+| Python 3.9+ | Plugin runtime |
+| QGIS 3.22+ | Host application |
+| Qt 5.x / 6.x | UI framework |
+| zstandard | .woof compression (Python path) |
+| Rust + PyO3 | .woof fast path (optional) |
+| GDAL | Format detection and export drivers |
+
 ## Compatibility
 
 | QGIS version | Qt | Python | Status |
@@ -165,6 +172,38 @@ When the native module is active, identical content is stored once in the archiv
 | 4.2 | Qt6 | 3.12+ | Tested in CI |
 | 4.x latest | Qt6 | 3.12+ | Tested in CI |
 
+## Limitations
+
+- The Python `.woof` path needs the `zstandard` package (`pip install zstandard`); without it, ZIP export still works but `.woof` does not.
+- Database/cloud drivers are excluded from the format lists because they need live connections, not file paths.
+- Remote layers (WMS, WFS, PostGIS) keep their original URLs in archives; they are not bundled, so archives with only remote layers need network access to load.
+- Scratch and memory layers are noted as not packaged in `.woof` archives.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Security
+
+See [SECURITY.md](SECURITY.md).
+
 ## License
 
-GNU General Public License v3.0. See `LICENSE`.
+GNU General Public License v3.0 - see [LICENSE](LICENSE).
+
+[license-badge]: https://img.shields.io/github/license/Wolren/DockExporter
+[license-url]: LICENSE
+[commit-badge]: https://img.shields.io/github/last-commit/Wolren/DockExporter
+[commits-url]: https://github.com/Wolren/DockExporter/commits
+[issues-badge]: https://img.shields.io/github/issues/Wolren/DockExporter
+[issues-url]: https://github.com/Wolren/DockExporter/issues
+[size-badge]: https://img.shields.io/github/languages/code-size/Wolren/DockExporter
+[repo-url]: https://github.com/Wolren/DockExporter
+[python-badge]: https://img.shields.io/badge/Python-3.9+-blue?logo=python
+[pyproject-url]: pyproject.toml
+[qgis-badge]: https://img.shields.io/badge/QGIS-3.22+-green
+[qgis-url]: https://qgis.org
+[ci-badge]: https://github.com/Wolren/DockExporter/actions/workflows/ci.yml/badge.svg
+[ci-url]: https://github.com/Wolren/DockExporter/actions/workflows/ci.yml
+[scorecard-badge]: https://api.securityscorecards.dev/projects/github.com/Wolren/DockExporter/badge
+[scorecard-url]: https://securityscorecards.dev/viewer/?uri=github.com/Wolren/DockExporter
