@@ -19,13 +19,11 @@ Export layers to single files, multi-layer GeoPackage, or portable `.woof` / ZIP
 
 ## Overview
 
-QGIS does not provide a single interface for batch-exporting layers in different formats. Each layer must be exported individually, with no built-in way to apply consistent filters, reprojections, or field selections across multiple layers.
+QGIS exports each layer individually, with no built-in way to apply consistent filters, reprojections, or field selections across multiple layers. Dock Export combines layer selection, format configuration, and batch export into a single dock:
 
-Dock Export combines layer selection, format configuration, and batch export into a single dock:
-
-- **Select layers** from a single list
-- **Configure export settings** - rename, filter, reproject, pick fields, apply styles
-- **Export** to single files, one GeoPackage, or a self-contained `.woof` / ZIP archive with rewritten project paths
+- Select layers from a single list
+- Configure export settings: rename, filter, reproject, pick fields, apply styles
+- Export to single files, one GeoPackage, or a self-contained `.woof` / ZIP archive with rewritten project paths
 
 ## Gallery
 
@@ -42,10 +40,8 @@ graph LR
     SPECS -->|"Single Files"| ENG["ExportEngine"]
     SPECS -->|"GeoPackage"| ENG
     SPECS -->|"Project Export"| PET["ProjectExportTab"]
-
     ENG --> SF["Single Files<br>.gpkg .shp .tif ..."]
     ENG --> GPKG["Multi-layer<br>GeoPackage"]
-
     PET --> WOOF[".woof archive<br>v4 Rust / Python"]
     PET --> ZIP["ZIP archive"]
 ```
@@ -56,48 +52,35 @@ graph LR
 
 | Mode | What it does | Best for |
 |---|---|---|
-| **Single Files** | Each layer to one or more files in a folder (GPKG, Shapefile, GeoTIFF, ...) | Sending layers individually, converting formats, archiving in folders |
+| **Single Files** | Each layer to one or more files in a folder | Sending layers individually, converting formats |
 | **GeoPackage** | All layers to one `.gpkg` with separate tables | Sharing many layers as one file |
-| **Project Export** | Whole project to `.woof` archive or `.zip` with source files + rewritten project XML | Sending a project to someone, backups, moving between machines |
+| **Project Export** | Whole project to `.woof` archive or `.zip` with source files + rewritten project XML | Sending a project, backups, moving between machines |
 
 ### Per-layer controls
 
 - **Rename** - per-layer export name with `{layer_name}`, `{date}`, `{crs}`, `{datetime}` placeholders
-- **Filter** - per-layer QGIS expression (`WHERE` clause) with field list, function tree, search, validation
+- **Filter** - per-layer QGIS expression with field list, function tree, search, validation
 - **Reproject** - per-layer CRS via the native QGIS projection picker
 - **Field subset** - pick which attributes to include
 - **Format override** - force a specific driver for a layer (e.g. Shapefile while the rest use GPKG)
 
 ### Formats
 
-The available drivers are detected from GDAL at runtime. Common write-capable formats:
-
-| Type | Formats |
-|---|---|
-| Vector | GeoPackage, ESRI Shapefile, GeoJSON, KML, CSV, FlatGeobuf, GPX, GML, SQLite, SpatiaLite, DXF, MBTiles, OpenFileGDB, GeoParquet, MVT, PMTiles, XLSX, ODS |
-| Raster | GeoTIFF, Cloud Optimized GeoTIFF, PNG, JPEG, JPEG XL, GIF, NetCDF, BMP, MBTiles, ERDAS Imagine, PCIDSK, GRIB, SAGA GIS, Zarr, PDF (Geospatial), RST |
-
-The exact list depends on the GDAL build in your QGIS installation. See the [GDAL vector format](https://gdal.org/drivers/vector/index.html) and [GDAL raster format](https://gdal.org/drivers/raster/index.html) documentation for the full catalog.
-
-> Database/cloud drivers (MySQL, PostgreSQL, Oracle, Carto, etc.) are excluded - they need live connections, not file paths.
+All GDAL write-capable vector and raster formats are available, detected at runtime (GeoPackage, Shapefile, GeoJSON, GeoTIFF, and 50+ more). Database and cloud drivers are excluded - they need live connections, not file paths. See the [GDAL vector](https://gdal.org/drivers/vector/index.html) and [GDAL raster](https://gdal.org/drivers/raster/index.html) format catalogs.
 
 ### Styles
 
 - **QML sidecars** - `.qml` files next to exported files
 - **SLD sidecars** - `.sld` files (vector only)
-- **Embed in GPKG** - styles stored in the `layer_styles` table (Single Files GPKG and GeoPackage tab)
+- **Embed in GPKG** - styles stored in the `layer_styles` table
 
-### Archive export (.woof / ZIP)
+### Project export
 
-- **.woof** - custom archive format with two backend implementations:
-  - **Rust (fast path)** - xxhash3-64 integrity checks, seek table for O(log n) random access, per-entry zstd compression, content-addressed dedup, parallel decompression. Install separately (see below).
-  - **Python (default path)** - same v4 format read/write, per-entry zstd compression, full backward compatibility with Rust-created archives. Shipped in the QGIS official plugin.
-- **ZIP** - standard deflate via Python `zipfile`
-- **Compression** - None / Normal / Heavy (woof: zstd 0 / 3 / 9; ZIP: STORE / DEFLATE+6 / DEFLATE+9)
+- **`.woof`** - single-file project snapshot with rewritten `woof://` paths, zstd compression, and integrity checks
+- **ZIP** - standard deflate archive
 - **Remote layers** - WMS, WFS, PostGIS, etc. keep their original datasource URLs
-- **Sidecars** - QML, SLD, world files (`.tfw`, `.pgw`, `.jgw`, ...) are collected automatically
-- **Project resources** - layout images, SVGs, HTML items, report templates included
-- **ArcGIS Pro integration** - check "Generate ArcPy script" in the Project Export tab to embed `open_in_arcgis_pro.py` + `layer_tree.json` inside the archive. After extraction, running the script recreates your QGIS layer groups as an ArcGIS Pro project.
+- **Sidecars and resources** - QML, SLD, world files, layout images, SVGs, report templates collected automatically
+- **ArcGIS Pro** - optional embedded ArcPy script that recreates your layer groups as an ArcGIS Pro project
 
 ### QGIS integration
 
@@ -109,49 +92,16 @@ The exact list depends on the GDAL build in your QGIS installation. See the [GDA
 
 ## .woof Format
 
-A `.woof` file is a single-file snapshot of a QGIS project. It bundles every file the project depends on - vector datasets, rasters, GeoPackages, styles, world files, layout images, SVGs, report templates - plus the project file itself with all paths rewritten to canonical `woof://` URIs.
+A `.woof` file is a single-file snapshot of a QGIS project: every file the project depends on (vector datasets, rasters, GeoPackages, styles, layout images, SVGs, report templates) plus the project file with all paths rewritten to `woof://` URIs. Open it from QGIS via Project -> Open From -> Open `.woof` Project.
 
-Open it from QGIS via Project -> Open From -> Open `.woof` Project. The archive is extracted and the project loads with all paths resolved. Remote layers keep their original URLs. Scratch and memory layers are noted as not packaged.
+| Path | Language | Speed | Shipped in QGIS repo? |
+|---|---|---|---|
+| **Default** | Python + `zstandard` | Moderate | Yes |
+| **Fast** | Rust + PyO3 | 2-5x faster | No (optional install) |
 
-### Dual-path implementation
+Archives are 100% compatible between both backends. The Rust path adds a seek table, content-addressed dedup, xxhash3-64 checksums, and parallel decompression.
 
-The `.woof` format has two backend implementations that are 100% archive-compatible:
-
-| Path | Language | Speed | Shipped in QGIS repo? | Features |
-|---|---|---|---|---|
-| **Default (Python)** | Python + `zstandard` | Moderate | Yes | v4 read/write, per-entry zstd, v2/v3/v4 compat, manifest |
-| **Fast (Rust)** | Rust + PyO3 | 2-5x faster | No (optional install) | All of the above + seek table, dedup, xxhash3-64 checksums, parallel decompression |
-
-Archives created by either backend can be read by the other. The Rust path adds performance and integrity guarantees but is not required for basic operation.
-
-### Rust native module (optional performance upgrade)
-
-The Rust crate (`woof_native/`) provides a native PyO3 module that accelerates packing, unpacking, and random-access extraction. To install:
-
-```bash
-# From source (requires Rust toolchain)
-cd woof_native
-cargo build --release
-cp target/release/_native_impl.{dll,pyd,so} ../dock_export/_woof_native/
-
-# Or via pip (when available)
-pip install woof-native
-```
-
-The plugin falls back to pure Python automatically if the native module is absent.
-
-### Manifest
-
-Every `.woof` v4 archive contains a `woof-manifest.json` entry that records:
-
-- Entry types (project, vector, raster, style, resource, arcpy, manifest)
-- Dependency graph (companion files like `.shx`/`.dbf` for `.shp`)
-- `woof://` URI rewrites for portable path resolution
-- Per-entry hashes and sizes
-
-### Content-addressed dedup (Rust only)
-
-When the native module is active, identical content is stored once in the archive payload. Multiple seek entries pointing to different names can reference the same data if their xxhash3-64 hashes match. This is transparent on extraction - the Python fallback reads deduplicated archives correctly.
+Format internals (manifest schema, dedup, native module build) are documented in [docs/WOOF_FORMAT.md](docs/WOOF_FORMAT.md).
 
 ## Tech stack
 
@@ -160,8 +110,8 @@ When the native module is active, identical content is stored once in the archiv
 | Python 3.9+ | Plugin runtime |
 | QGIS 3.22+ | Host application |
 | Qt 5.x / 6.x | UI framework |
-| zstandard | .woof compression (Python path) |
-| Rust + PyO3 | .woof fast path (optional) |
+| zstandard | `.woof` compression (Python path) |
+| Rust + PyO3 | `.woof` fast path (optional) |
 | GDAL | Format detection and export drivers |
 
 ## Compatibility
@@ -176,7 +126,6 @@ When the native module is active, identical content is stored once in the archiv
 ## Limitations
 
 - The Python `.woof` path needs the `zstandard` package (`pip install zstandard`); without it, ZIP export still works but `.woof` does not.
-- Database/cloud drivers are excluded from the format lists because they need live connections, not file paths.
 - Remote layers (WMS, WFS, PostGIS) keep their original URLs in archives; they are not bundled, so archives with only remote layers need network access to load.
 - Scratch and memory layers are noted as not packaged in `.woof` archives.
 
