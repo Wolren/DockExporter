@@ -13,6 +13,8 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v7
-      - uses: socketdev/socket-action@v3.5.0
+      - uses: SocketDev/action@v1.3.2
         with:
-          python: "3.11"
+          mode: firewall-free
+      - name: Install dependencies through firewall
+        run: sfw pip install ruff
