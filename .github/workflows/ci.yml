@@ -120,6 +120,27 @@ jobs:
               log(f"PyQt not available: {e}", "error")
               errors += 1
 
+          # ==== Qt/QGIS application bootstrap =====
+          # Creating QWidget/QMenu/QAction without an application instance
+          # aborts the process (SIGABRT, exit 134). QGIS docker images do
+          # not create one for plain python3 runs, so bootstrap it here.
+          print()
+          print("=== Qt/QGIS application bootstrap ===")
+          try:
+              from qgis.core import QgsApplication
+
+              _prefix = os.environ.get("QGIS_PREFIX_PATH", "/usr")
+              _app = QgsApplication([], True)
+              _app.setPrefixPath(_prefix, True)
+              _app.initQgis()
+              log(f"QgsApplication created (prefix={_prefix}) + initQgis()")
+          except Exception as e:
+              from qgis.PyQt.QtWidgets import QApplication
+
+              if QApplication.instance() is None:
+                  QApplication([])
+              log(f"QgsApplication init failed ({e}) - plain QApplication used")
+
           # ==== Module import =====
           print()
           print("=== Plugin import ===")
@@ -259,7 +280,11 @@ jobs:
           # ==== Run unit tests =====
           print()
           tests_path = "/plugin/tests"
-          if os.path.isdir(tests_path):
+          import importlib.util
+
+          if importlib.util.find_spec("pytest") is None:
+              print("pytest not installed in this QGIS image - skipping unit tests")
+          elif os.path.isdir(tests_path):
               print("=== Running tests ===")
               import subprocess
               result = subprocess.run(

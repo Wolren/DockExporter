@@ -24,7 +24,18 @@ from __future__ import annotations
 import os
 import struct
 
-import zstandard as _zstd
+try:
+    import zstandard as _zstd
+except ImportError:  # optional dependency - plugin still loads without it
+    _zstd = None
+
+
+def _require_zstd() -> None:
+    if _zstd is None:
+        raise RuntimeError(
+            "The 'zstandard' package is required for .woof compression. "
+            "Install it with: pip install zstandard"
+        )
 
 WOOF_MAGIC = b"WOOF"
 WOOF_VERSION_V2 = 2
@@ -154,6 +165,7 @@ def _encode_seek_table(entries: list[dict]) -> bytes:
 
 def _pack_v4(entries, compress: bool, level: int = 3) -> bytes:
     """Build a v4 .woof byte array with seek table, xxhash3-64 checksums, and dedup."""
+    _require_zstd()
     cctx = _zstd.ZstdCompressor(level=level) if compress else None
     total_raw = 0
 
@@ -236,6 +248,7 @@ def _extract_entry(data: bytes, seek_entry: dict, payload_slice: bytes) -> bytes
     raw = payload_slice[start:end]
 
     if seek_entry["flags"] & FLAG_ENTRY_ZSTD:
+        _require_zstd()
         dctx = _zstd.ZstdDecompressor()
         decompressed = dctx.decompress(raw, max_output_size=seek_entry["raw_size"])
     else:
@@ -262,6 +275,7 @@ def _iter_dict(entries: dict[str, bytes]):
 def _pack_v2(entries, compress: bool, level: int = 3) -> bytes:
     """Build a v2 .woof byte array with per-file zstd compression."""
     parts: list[bytes] = []
+    _require_zstd()
     cctx = _zstd.ZstdCompressor(level=level) if compress else None
     total_raw = 0
 
@@ -306,6 +320,7 @@ def _unpack_v2(data: bytes) -> dict[str, bytes]:
     entries: dict[str, bytes] = {}
     fp = 0
     ftable_len = len(payload)
+    _require_zstd()
     dctx = _zstd.ZstdDecompressor()
     while fp < ftable_len:
         flags, name_len = struct.unpack("<II", payload[fp : fp + 8])
@@ -471,6 +486,7 @@ def unpack_one_py(data: bytes, name: str) -> bytes:
 def _unpack_one_v2(data: bytes, name: str) -> bytes:
     _hdr_flags, xor_size, _total_raw = struct.unpack("<QQQ", data[8:32])
     payload = data[HEADER_SIZE_V2 : HEADER_SIZE_V2 + xor_size]
+    _require_zstd()
     dctx = _zstd.ZstdDecompressor()
     fp = 0
     ftable_len = len(payload)

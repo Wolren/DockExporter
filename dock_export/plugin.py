@@ -5,8 +5,8 @@ from contextlib import suppress
 
 from qgis.core import QgsMapLayer
 from qgis.PyQt.QtCore import QPoint, Qt
-from qgis.PyQt.QtGui import QAction, QIcon
-from qgis.PyQt.QtWidgets import QFileDialog, QMenu, QMessageBox
+from qgis.PyQt.QtGui import QIcon
+from qgis.PyQt.QtWidgets import QAction, QFileDialog, QMenu, QMessageBox
 
 from .ui.dock_widget import ExportDockWidget
 from .woof.woof_storage import open_woof_project

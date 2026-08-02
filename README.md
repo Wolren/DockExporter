@@ -156,6 +156,15 @@ Every `.woof` v4 archive contains a `woof-manifest.json` entry that records:
 
 When the native module is active, identical content is stored once in the archive payload. Multiple seek entries pointing to different names can reference the same data if their xxhash3-64 hashes match. This is transparent on extraction - the Python fallback reads deduplicated archives correctly.
 
+## Compatibility
+
+| QGIS version | Qt | Python | Status |
+|---|---|---|---|
+| 3.22 LTR | Qt5 | 3.9+ | Tested in CI |
+| 3.x stable | Qt5/Qt6 | 3.9+ | Tested in CI |
+| 4.2 | Qt6 | 3.12+ | Tested in CI |
+| 4.x latest | Qt6 | 3.12+ | Tested in CI |
+
 ## License
 
 GNU General Public License v3.0. See `LICENSE`.
