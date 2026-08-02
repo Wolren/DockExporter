@@ -1,5 +1,7 @@
 """Background export worker. Runs ExportEngine.run() off the main thread."""
 
+from __future__ import annotations
+
 from qgis.PyQt.QtCore import QObject, pyqtSignal
 
 from ..models import ExportSpec

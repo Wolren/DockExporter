@@ -1,5 +1,7 @@
 """Per-layer settings dialog: CRS, encoding, selected features, field selection, aliases, geometry, and metadata."""
 
+from __future__ import annotations
+
 import encodings.aliases
 
 from qgis.core import (
