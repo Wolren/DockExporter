@@ -1,6 +1,7 @@
 """Unified .woof interface backed by the native Rust module."""
 
 from __future__ import annotations
+
 import os
 
 try:
