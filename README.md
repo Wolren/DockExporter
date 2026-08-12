@@ -14,6 +14,7 @@ Export layers to single files, multi-layer GeoPackage, or portable `.woof` / ZIP
 [![QGIS][qgis-badge]][qgis-url]
 [![CI][ci-badge]][ci-url]
 [![OpenSSF Scorecard][scorecard-badge]][scorecard-url]
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20Wolren-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/wolren)
 
 </div>
 
