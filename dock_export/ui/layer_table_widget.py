@@ -711,12 +711,12 @@ class LayerTableWidget(QTableWidget):
         f = item.font()
         if export_name != source_name:
             item.setForeground(QBrush(QColor("#2e7d32")))
-            item.setBackground(QBrush(QColor()))
+            item.setBackground(QBrush())
             f.setBold(True)
             f.setItalic(True)
             item.setToolTip("Custom export name")
         else:
-            item.setBackground(QBrush(QColor()))
+            item.setBackground(QBrush())
             f.setBold(False)
             f.setItalic(False)
             item.setToolTip("")
